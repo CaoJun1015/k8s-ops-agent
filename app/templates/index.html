@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>K8s Todo App</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+        .header h1 {
+            font-size: 28px;
+            margin-bottom: 8px;
+        }
+        .header p {
+            opacity: 0.9;
+            font-size: 14px;
+        }
+        .input-section {
+            padding: 20px 30px;
+            border-bottom: 1px solid #eee;
+            display: flex;
+            gap: 10px;
+        }
+        .input-section input {
+            flex: 1;
+            padding: 12px 16px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 16px;
+            transition: border-color 0.3s;
+        }
+        .input-section input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        .input-section button {
+            padding: 12px 24px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+        .input-section button:hover {
+            transform: scale(1.05);
+        }
+        .todo-list {
+            padding: 10px 30px 30px;
+        }
+        .todo-item {
+            display: flex;
+            align-items: center;
+            padding: 16px 0;
+            border-bottom: 1px solid #f0f0f0;
+            animation: fadeIn 0.3s ease;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(-10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .todo-item.done .todo-title {
+            text-decoration: line-through;
+            color: #999;
+        }
+        .todo-checkbox {
+            width: 24px;
+            height: 24px;
+            border: 2px solid #ddd;
+            border-radius: 50%;
+            margin-right: 16px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.3s;
+        }
+        .todo-item.done .todo-checkbox {
+            background: #667eea;
+            border-color: #667eea;
+        }
+        .todo-item.done .todo-checkbox::after {
+            content: '✓';
+            color: white;
+            font-size: 14px;
+        }
+        .todo-title {
+            flex: 1;
+            font-size: 16px;
+            color: #333;
+        }
+        .todo-delete {
+            width: 32px;
+            height: 32px;
+            border: none;
+            background: #ff4757;
+            color: white;
+            border-radius: 50%;
+            cursor: pointer;
+            font-size: 18px;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+        .todo-item:hover .todo-delete {
+            opacity: 1;
+        }
+        .empty-state {
+            text-align: center;
+            padding: 40px;
+            color: #999;
+        }
+        .empty-state p {
+            font-size: 18px;
+            margin-bottom: 8px;
+        }
+        .stats {
+            padding: 15px 30px;
+            background: #f8f9fa;
+            font-size: 14px;
+            color: #666;
+            display: flex;
+            justify-content: space-between;
+        }
+        .tech-stack {
+            padding: 20px 30px;
+            background: #f8f9fa;
+            border-top: 1px solid #eee;
+            text-align: center;
+            font-size: 12px;
+            color: #999;
+        }
+        .tech-stack span {
+            margin: 0 8px;
+            padding: 4px 8px;
+            background: #e9ecef;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📝 K8s Todo App</h1>
+            <p>Flask + Redis + Docker + Kubernetes</p>
+        </div>
+
+        <div class="input-section">
+            <input type="text" id="todoInput" placeholder="添加新的待办事项..." autofocus>
+            <button onclick="addTodo()">添加</button>
+        </div>
+
+        <div class="todo-list" id="todoList">
+            <div class="empty-state">
+                <p>暂无待办事项</p>
+                <p>👆 添加一个开始吧</p>
+            </div>
+        </div>
+
+        <div class="stats" id="stats" style="display: none;">
+            <span id="totalCount">总计: 0</span>
+            <span id="doneCount">已完成: 0</span>
+        </div>
+
+        <div class="tech-stack">
+            <span>Python Flask</span>
+            <span>Redis</span>
+            <span>Docker</span>
+            <span>Kubernetes</span>
+            <span>Nginx</span>
+        </div>
+    </div>
+
+    <script>
+        const API_URL = '/api/todos';
+
+        // 页面加载时获取待办列表
+        document.addEventListener('DOMContentLoaded', loadTodos);
+
+        // 回车添加待办
+        document.getElementById('todoInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') addTodo();
+        });
+
+        async function loadTodos() {
+            try {
+                const response = await fetch(API_URL);
+                const todos = await response.json();
+                renderTodos(todos);
+            } catch (error) {
+                console.error('加载失败:', error);
+            }
+        }
+
+        async function addTodo() {
+            const input = document.getElementById('todoInput');
+            const title = input.value.trim();
+            if (!title) return;
+
+            try {
+                const response = await fetch(API_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ title })
+                });
+                if (response.ok) {
+                    input.value = '';
+                    loadTodos();
+                }
+            } catch (error) {
+                console.error('添加失败:', error);
+            }
+        }
+
+        async function toggleTodo(id, done) {
+            try {
+                await fetch(`${API_URL}/${id}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ done: !done })
+                });
+                loadTodos();
+            } catch (error) {
+                console.error('更新失败:', error);
+            }
+        }
+
+        async function deleteTodo(id) {
+            try {
+                await fetch(`${API_URL}/${id}`, { method: 'DELETE' });
+                loadTodos();
+            } catch (error) {
+                console.error('删除失败:', error);
+            }
+        }
+
+        function renderTodos(todos) {
+            const list = document.getElementById('todoList');
+            const stats = document.getElementById('stats');
+
+            if (todos.length === 0) {
+                list.innerHTML = `
+                    <div class="empty-state">
+                        <p>暂无待办事项</p>
+                        <p>👆 添加一个开始吧</p>
+                    </div>
+                `;
+                stats.style.display = 'none';
+                return;
+            }
+
+            stats.style.display = 'flex';
+            const doneCount = todos.filter(t => t.done).length;
+            document.getElementById('totalCount').textContent = `总计: ${todos.length}`;
+            document.getElementById('doneCount').textContent = `已完成: ${doneCount}`;
+
+            list.innerHTML = todos.map(todo => `
+                <div class="todo-item ${todo.done ? 'done' : ''}">
+                    <div class="todo-checkbox" onclick="toggleTodo('${todo.id}', ${todo.done})"></div>
+                    <span class="todo-title">${escapeHtml(todo.title)}</span>
+                    <button class="todo-delete" onclick="deleteTodo('${todo.id}')">×</button>
+                </div>
+            `).join('');
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+    </script>
+</body>
+</html>
