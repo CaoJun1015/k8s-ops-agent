@@ -29,7 +29,8 @@ echo "[1] 日志级别统计"
 echo "$LOGS" | grep -oE "\[(INFO|WARN|ERROR|DEBUG)\]" | sort | uniq -c | sort -rn
 
 # ---- ERROR详情 ----
-ERROR_COUNT=$(echo "$LOGS" | grep -c "\[ERROR\]" 2>/dev/null || echo 0)
+ERROR_COUNT=$(echo "$LOGS" | grep -c "\[ERROR\]" 2>/dev/null)
+ERROR_COUNT=${ERROR_COUNT:-0}
 echo ""
 echo "[2] ERROR日志 (${ERROR_COUNT}条)"
 if [ "$ERROR_COUNT" -gt 0 ]; then
