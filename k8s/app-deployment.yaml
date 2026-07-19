@@ -4,6 +4,12 @@ metadata:
   name: todo-app
 spec:
   replicas: 3
+  # 滚动更新策略（呼应简历"滚动更新与版本回滚"）
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 1
   selector:
     matchLabels:
       app: todo-app
@@ -16,6 +22,13 @@ spec:
       - name: flask
         image: todo-app:v1
         imagePullPolicy: Never
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
         ports:
         - containerPort: 5000
         env:

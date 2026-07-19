@@ -1,0 +1,55 @@
+stages:
+  - test
+  - build
+  - deploy
+
+variables:
+  DOCKER_IMAGE: "todo-app"
+  DOCKER_TAG: "$CI_COMMIT_SHORT_SHA"
+
+test:
+  stage: test
+  image: python:3.11-slim
+  before_script:
+    - cd app
+    - pip install -r requirements.txt
+  script:
+    - python -m pytest tests/ -v --junitxml=reports/junit.xml
+  artifacts:
+    when: always
+    reports:
+      junit: app/reports/junit.xml
+    paths:
+      - app/reports/
+
+build:
+  stage: build
+  image: docker:latest
+  services:
+    - docker:dind
+  before_script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+  script:
+    - |
+      docker build \
+        -t $CI_REGISTRY_IMAGE:$DOCKER_TAG \
+        -t $CI_REGISTRY_IMAGE:latest \
+        -f docker/Dockerfile .
+    - docker push $CI_REGISTRY_IMAGE:$DOCKER_TAG
+    - docker push $CI_REGISTRY_IMAGE:latest
+  only:
+    - main
+    - master
+
+deploy:
+  stage: deploy
+  image: bitnami/kubectl:latest
+  before_script:
+    - kubectl config use-context $KUBE_CONTEXT
+  script:
+    - kubectl set image deployment/todo-app flask=$CI_REGISTRY_IMAGE:$DOCKER_TAG -n default
+    - kubectl rollout status deployment/todo-app -n default --timeout=120s
+  only:
+    - main
+    - master
+  when: manual

@@ -1,0 +1,80 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+data:
+  todo-app-dashboard.json: |
+    {
+      "title": "Todo App 监控面板",
+      "uid": "todo-app",
+      "panels": [
+        {
+          "title": "Pod 状态",
+          "type": "stat",
+          "targets": [
+            {
+              "expr": "count(kube_pod_status_ready{namespace=\"default\",pod=~\"todo-app-.*\",condition=\"true\"} == 1)"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "red", "value": null },
+                  { "color": "green", "value": 3 }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "title": "CPU 使用率",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "avg(rate(container_cpu_usage_seconds_total{namespace=\"default\",pod=~\"todo-app-.*\"}[5m])) by (pod) * 100"
+            }
+          ]
+        },
+        {
+          "title": "内存使用率",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "avg(container_memory_usage_bytes{namespace=\"default\",pod=~\"todo-app-.*\"}) by (pod) / avg(container_spec_memory_limit_bytes{namespace=\"default\",pod=~\"todo-app-.*\"}) by (pod) * 100"
+            }
+          ]
+        },
+        {
+          "title": "HTTP 请求速率",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "rate(http_requests_total{namespace=\"default\"}[5m])"
+            }
+          ]
+        },
+        {
+          "title": "Redis 连接状态",
+          "type": "stat",
+          "targets": [
+            {
+              "expr": "redis_up{namespace=\"default\"}"
+            }
+          ]
+        },
+        {
+          "title": "Pod 重启次数",
+          "type": "stat",
+          "targets": [
+            {
+              "expr": "sum(kube_pod_container_status_restarts_total{namespace=\"default\",pod=~\"todo-app-.*\"})"
+            }
+          ]
+        }
+      ]
+    }

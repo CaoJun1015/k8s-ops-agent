@@ -1,0 +1,64 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: todo-app-alerts
+  namespace: monitoring
+  labels:
+    app: prometheus
+spec:
+  groups:
+    - name: todo-app
+      rules:
+        - alert: HighPodRestartCount
+          expr: rate(kube_pod_container_status_restarts_total{namespace="default",pod=~"todo-app-.*"}[1h]) > 0.05
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Pod 重启过于频繁"
+            description: "{{ $labels.pod }} 在 1 小时内重启次数超过阈值"
+
+        - alert: HighCPUUsage
+          expr: avg(rate(container_cpu_usage_seconds_total{namespace="default",pod=~"todo-app-.*"}[5m])) by (pod) * 100 > 80
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "CPU 使用率过高"
+            description: "{{ $labels.pod }} CPU 使用率 {{ $value }}%"
+
+        - alert: HighMemoryUsage
+          expr: avg(container_memory_usage_bytes{namespace="default",pod=~"todo-app-.*"}) by (pod) / avg(container_spec_memory_limit_bytes{namespace="default",pod=~"todo-app-.*"}) by (pod) * 100 > 85
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "内存使用率过高"
+            description: "{{ $labels.pod }} 内存使用率 {{ $value }}%"
+
+        - alert: PodNotReady
+          expr: kube_pod_status_ready{namespace="default",condition="true",pod=~"todo-app-.*"} == 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Pod 未就绪"
+            description: "{{ $labels.pod }} 超过 2 分钟未就绪"
+
+        - alert: HighErrorRate
+          expr: rate(http_requests_total{namespace="default",status=~"5.."}[5m]) > 0.1
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "5xx 错误率过高"
+            description: "{{ $labels.pod }} 5xx 错误率 {{ $value }}"
+
+        - alert: RedisDown
+          expr: redis_up{namespace="default"} == 0
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Redis 不可用"
+            description: "Redis 实例 {{ $labels.instance }} 已宕机超过 1 分钟"
