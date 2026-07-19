@@ -41,11 +41,13 @@
 | 层 | 技术 | 说明 |
 |----|------|------|
 | 应用 | Python Flask + Redis | 待办事项Web应用 |
-| 容器 | Docker | 应用打包 |
-| 编排 | Kubernetes | 生产级部署 |
-| 代理 | Nginx | 反向代理 |
+| 容器 | Docker（多阶段构建） | 应用打包，镜像体积优化 |
+| 编排 | Kubernetes | 生产级部署，含健康探针 |
+| 代理 | Nginx | 反向代理，gzip压缩 |
 | 运维 | Shell脚本 | 巡检/分析/自愈/告警 |
 | AI | OpenAI / Claude | 日志分析、根因定位 |
+| CI/CD | Jenkins / GitLab CI | 自动化测试、构建、部署 |
+| 监控 | Prometheus + Grafana | 指标采集、告警规则、可视化面板 |
 | 方法论 | TDD + 工程化实践 | 参见 docs/ |
 
 ## 快速开始
@@ -95,6 +97,61 @@ crontab -e
 */5 * * * * /path/to/ops/auto-fix.sh
 ```
 
+## CI/CD 流水线
+
+项目内置 Jenkins 和 GitLab CI 两种流水线配置：
+
+```bash
+# Jenkins
+# 在 Jenkins 中新建 Pipeline 任务，选择 "Pipeline script from SCM"
+# Jenkinsfile 路径：ci/Jenkinsfile
+
+# GitLab CI
+# 推送到 main/develop 分支自动触发
+# 配置见 ci/gitlab-ci.yml
+```
+
+流水线流程：代码提交 → 单元测试 → 多阶段构建 Docker 镜像 → 推送 Harbor → kubectl set image 滚动更新
+
+分支策略：
+- `develop` → 自动部署 dev 环境
+- `main` → 自动部署 staging 环境
+- `prod` → Jenkins 参数手动触发部署
+
+## 监控体系
+
+基于 Prometheus + Grafana 的监控告警：
+
+```bash
+# 部署监控组件
+kubectl apply -f monitoring/
+```
+
+告警规则覆盖：
+- Pod 重启频繁
+- CPU 使用率过高（>80%）
+- 内存使用率过高（>85%）
+- Pod 未就绪超时
+- 5xx 错误率过高
+- Redis 不可用
+
+Grafana 面板：Pod 状态分布、CPU/内存 Top 5、重启次数趋势
+
+## 健康检查
+
+Flask 应用提供 `/health` 端点，返回应用状态 + K8s 环境信息：
+
+```json
+{
+  "status": "ok",
+  "redis": "connected",
+  "pod": "todo-app-xxx",
+  "node": "node-1"
+}
+```
+
+K8s Deployment 配置了 readinessProbe（initialDelaySeconds=5）和 livenessProbe（initialDelaySeconds=15），实现故障自动恢复。
+
 ## 巡检覆盖项
 
 | 检查项 | 说明 |
@@ -115,6 +172,8 @@ crontab -e
 - [架构说明](docs/architecture.md)
 - [故障排查手册](docs/troubleshooting.md)
 - [工程化方法论](docs/engineering-practice.md)
+- [CI/CD 配置说明](ci/README.md)
+- [监控体系说明](monitoring/README.md)
 
 ## License
 

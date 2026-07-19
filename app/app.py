@@ -25,12 +25,22 @@ def index():
 
 @app.route('/health')
 def health():
-    """健康检查"""
+    """健康检查 — 返回应用状态 + K8s 环境信息"""
     try:
         cache.ping()
-        return jsonify({"status": "ok", "redis": "connected"})
+        redis_status = "connected"
+        status_code = 200
     except Exception:
-        return jsonify({"status": "error", "redis": "disconnected"}), 500
+        redis_status = "disconnected"
+        status_code = 500
+
+    # K8s Downward API 注入的环境变量
+    return jsonify({
+        "status": "ok" if redis_status == "connected" else "error",
+        "redis": redis_status,
+        "pod": os.environ.get('HOSTNAME', 'unknown'),
+        "node": os.environ.get('NODE_NAME', 'unknown')
+    }), status_code
 
 @app.route('/api/todos', methods=['GET'])
 def get_todos():

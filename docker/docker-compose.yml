@@ -9,8 +9,8 @@ services:
 
   flask:
     build:
-      context: ../app
-      dockerfile: ../docker/Dockerfile
+      context: ..
+      dockerfile: docker/Dockerfile
     restart: always
     environment:
       - REDIS_HOST=redis

@@ -48,6 +48,9 @@ Agent运维（本项目）：
 ├─────────────────────────────────────────────┤
 │  config/threshold.conf — 阈值配置           │
 │  reports/              — 巡检报告           │
+├─────────────────────────────────────────────┤
+│  ci/                   — CI/CD 流水线       │
+│  monitoring/           — Prometheus+Grafana │
 └─────────────────────────────────────────────┘
 ```
 
@@ -75,6 +78,33 @@ Agent运维（本项目）：
 |------|------|
 | threshold.conf | 告警阈值、Webhook地址、监控范围 |
 
+### ci/ — CI/CD 流水线层
+
+| 文件 | 用途 | 平台 |
+|------|------|------|
+| Jenkinsfile | Jenkins Pipeline 配置 | Jenkins |
+| gitlab-ci.yml | GitLab CI/CD 配置 | GitLab |
+| README.md | 流水线使用说明 | — |
+
+流水线流程：代码提交 → 单元测试 → 多阶段构建 Docker 镜像 → 推送 Harbor → kubectl set image 滚动更新
+
+分支策略：
+- develop 分支 → 自动部署 dev 环境
+- main 分支 → 自动部署 staging 环境
+- prod 部署 → Jenkins 参数手动触发
+
+### monitoring/ — 监控告警层
+
+| 文件 | 用途 |
+|------|------|
+| namespace.yaml | monitoring 命名空间 |
+| prometheus-config.yaml | Prometheus 采集配置（含 K8s 服务发现） |
+| prometheus-alert-rules.yaml | 告警规则（Pod 重启/CPU/内存/5xx/Redis） |
+| grafana-dashboards.yaml | Grafana Dashboard 配置 |
+| README.md | 监控体系说明 |
+
+架构：Prometheus 定期采集指标 → AlertManager 接收告警 → Webhook 通知飞书/企业微信 → Grafana 可视化面板
+
 ## 技术栈
 
 ```
@@ -84,6 +114,9 @@ curl          — HTTP请求（告警Webhook、LLM API）
 grep/awk/sed  — 文本处理
 crontab       — 定时调度
 OpenAI/Claude — AI分析（可选）
+Jenkins       — CI/CD 流水线
+Prometheus    — 指标采集与告警
+Grafana       — 可视化面板
 ```
 
 ## 工作流

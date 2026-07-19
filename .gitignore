@@ -21,6 +21,7 @@ Thumbs.db
 
 # Logs (runtime, keep committed reports)
 *.log
+reports/*.log
 
 # Environment
 .env
