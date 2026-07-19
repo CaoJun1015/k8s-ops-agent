@@ -1,7 +1,9 @@
 #!/bin/bash
+set -euo pipefail
 # ============================================================
 #  K8s Ops Agent — 故障自愈脚本
-#  用法: bash ops/auto-fix.sh
+#  用法: bash ops/auto-fix.sh [--execute]
+#  默认: 干运行模式（仅检查不修复），加 --execute 执行实际修复
 #  功能: 自动检测并修复常见K8s故障
 # ============================================================
 
@@ -15,6 +17,15 @@ mkdir -p "$(dirname "$LOG_FILE")"
 
 log() { echo "[$(date '+%H:%M:%S')] $1" | tee -a "$LOG_FILE"; }
 
+# 默认干运行模式，需显式指定 --execute 才执行实际修复
+DRY_RUN=true
+if [ "${1:-}" = "--execute" ]; then
+    DRY_RUN=false
+    log "运行模式: 执行修复"
+else
+    log "运行模式: 干运行（仅检查不修复），加 --execute 参数执行实际修复"
+fi
+
 log "========== 故障自愈检查开始 =========="
 
 FIXED=0
@@ -23,11 +34,16 @@ FIXED=0
 log "[1] 检查CrashLoopBackOff Pod"
 CRASH_PODS=$(kubectl get pods --all-namespaces --no-headers 2>/dev/null | grep "CrashLoopBackOff")
 if [ -n "$CRASH_PODS" ]; then
-    echo "$CRASH_PODS" | while read NS POD REST; do
-        log "  发现异常: ${NS}/${POD}，尝试删除重建"
-        kubectl delete pod -n "$NS" "$POD" 2>/dev/null
+    while read -r NS POD REST; do
+        [ -z "$NS" ] && continue
+        if [ "$DRY_RUN" = true ]; then
+            log "  [DRY-RUN] 将删除: ${NS}/${POD}"
+        else
+            log "  发现异常: ${NS}/${POD}，尝试删除重建"
+            kubectl delete pod -n "$NS" "$POD" 2>/dev/null
+        fi
         FIXED=$((FIXED + 1))
-    done
+    done <<< "$CRASH_PODS"
 else
     log "  无CrashLoopBackOff Pod"
 fi
@@ -49,7 +65,11 @@ EVICTED=$(kubectl get pods --all-namespaces --no-headers 2>/dev/null | grep "Evi
 if [ "$EVICTED" -gt 0 ]; then
     log "  发现 ${EVICTED} 个Evicted Pod，清理中"
     kubectl get pods --all-namespaces --no-headers | grep "Evicted" | while read NS POD REST; do
-        kubectl delete pod -n "$NS" "$POD" 2>/dev/null
+        if [ "$DRY_RUN" = true ]; then
+            log "  [DRY-RUN] 将删除: ${NS}/${POD}"
+        else
+            kubectl delete pod -n "$NS" "$POD" 2>/dev/null
+        fi
     done
     FIXED=$((FIXED + EVICTED))
 else

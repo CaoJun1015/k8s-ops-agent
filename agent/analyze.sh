@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 # ============================================================
 #  K8s Ops Agent — AI日志分析
 #  用法: bash agent/analyze.sh [pod名] [命名空间]
@@ -66,6 +67,11 @@ if command -v openai &>/dev/null; then
     echo "$PROMPT" | openai api chat.completions.create -m gpt-4 -g 2>/dev/null
 
 elif [ -n "$OPENAI_API_KEY" ]; then
+    # 检查 jq 依赖
+    if ! command -v jq &>/dev/null; then
+        echo "  [ERROR] jq 未安装，请执行: apt-get install jq 或 brew install jq"
+        exit 1
+    fi
     # 使用curl调用OpenAI API
     RESPONSE=$(curl -s https://api.openai.com/v1/chat/completions \
         -H "Authorization: Bearer $OPENAI_API_KEY" \
@@ -79,6 +85,11 @@ elif [ -n "$OPENAI_API_KEY" ]; then
     echo "$RESPONSE" | jq -r '.choices[0].message.content' 2>/dev/null || echo "  API调用失败"
 
 elif [ -n "$ANTHROPIC_API_KEY" ]; then
+    # 检查 jq 依赖
+    if ! command -v jq &>/dev/null; then
+        echo "  [ERROR] jq 未安装，请执行: apt-get install jq 或 brew install jq"
+        exit 1
+    fi
     # 使用curl调用Claude API
     RESPONSE=$(curl -s https://api.anthropic.com/v1/messages \
         -H "x-api-key: $ANTHROPIC_API_KEY" \

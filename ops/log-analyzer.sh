@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 # ============================================================
 #  K8s Ops Agent — 日志分析脚本
 #  用法: bash ops/log-analyzer.sh [pod名] [命名空间]

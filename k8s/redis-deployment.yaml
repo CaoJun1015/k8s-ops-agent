@@ -22,4 +22,9 @@ spec:
           mountPath: /data
       volumes:
       - name: redis-data
-        emptyDir: {}
+        hostPath:
+          path: /data/redis
+          type: DirectoryOrCreate
+        # 生产环境建议改用 PVC:
+        # persistentVolumeClaim:
+        #   claimName: redis-pvc

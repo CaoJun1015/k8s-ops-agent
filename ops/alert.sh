@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 # ============================================================
 #  K8s Ops Agent — 告警通知脚本
 #  用法: bash ops/alert.sh "告警内容"
@@ -17,7 +18,7 @@ TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
 HOSTNAME=$(hostname 2>/dev/null || echo "unknown")
 
 # ---- 构造告警消息 ----
-MESSAGE="[${ALERT_LEVEL^^}] ${TIMESTAMP}\n主机: ${HOSTNAME}\n详情: ${ALERT_MSG}"
+MESSAGE="[${ALERT_LEVEL^^}] ${TIMESTAMP} | 主机: ${HOSTNAME} | 详情: ${ALERT_MSG}"
 
 echo "=========================================="
 echo "  告警通知"

@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 # ============================================================
 #  K8s Ops Agent — 自然语言巡检报告
 #  用法: bash agent/report.sh

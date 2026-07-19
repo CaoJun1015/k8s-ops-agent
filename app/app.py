@@ -2,7 +2,7 @@ from flask import Flask, jsonify, request, render_template
 import redis
 import os
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 app = Flask(__name__)
 
@@ -29,7 +29,7 @@ def health():
     try:
         cache.ping()
         return jsonify({"status": "ok", "redis": "connected"})
-    except:
+    except Exception:
         return jsonify({"status": "error", "redis": "disconnected"}), 500
 
 @app.route('/api/todos', methods=['GET'])
@@ -52,16 +52,23 @@ def get_todos():
 @app.route('/api/todos', methods=['POST'])
 def add_todo():
     """添加待办"""
+    MAX_TITLE_LENGTH = 200
     data = request.get_json()
     if not data or not data.get('title'):
         return jsonify({"error": "title is required"}), 400
 
+    title = data['title'].strip()
+    if not title:
+        return jsonify({"error": "title cannot be empty"}), 400
+    if len(title) > MAX_TITLE_LENGTH:
+        return jsonify({"error": f"title exceeds max length of {MAX_TITLE_LENGTH}"}), 400
+
     todo_id = str(uuid.uuid4())[:8]
     todo = {
         "id": todo_id,
-        "title": data['title'],
+        "title": title,
         "done": "false",
-        "created_at": datetime.utcnow().isoformat() + "Z"
+        "created_at": datetime.now(timezone.utc).isoformat()
     }
     cache.hset(f"todo:{todo_id}", mapping=todo)
     return jsonify(todo), 201
@@ -98,4 +105,5 @@ def delete_todo(todo_id):
     return jsonify({"success": True})
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    debug_mode = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
+    app.run(host='0.0.0.0', port=5000, debug=debug_mode)

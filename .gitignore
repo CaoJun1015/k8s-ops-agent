@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+
+# Trae internal
+.trae/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs (runtime, keep committed reports)
+*.log
+
+# Environment
+.env

@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 # ============================================================
 #  K8s Ops Agent — 日常巡检脚本
 #  用法: bash ops/daily-inspection.sh
