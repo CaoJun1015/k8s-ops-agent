@@ -1,64 +1,57 @@
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
-  name: todo-app-alerts
+  name: ops-agent-alerts
   namespace: monitoring
   labels:
-    app: prometheus
+    release: kube-prometheus-stack
 spec:
   groups:
-    - name: todo-app
+    - name: ops-agent
       rules:
-        - alert: HighPodRestartCount
-          expr: rate(kube_pod_container_status_restarts_total{namespace="default",pod=~"todo-app-.*"}[1h]) > 0.05
-          for: 5m
-          labels:
-            severity: warning
-          annotations:
-            summary: "Pod 重启过于频繁"
-            description: "{{ $labels.pod }} 在 1 小时内重启次数超过阈值"
-
-        - alert: HighCPUUsage
-          expr: avg(rate(container_cpu_usage_seconds_total{namespace="default",pod=~"todo-app-.*"}[5m])) by (pod) * 100 > 80
-          for: 5m
-          labels:
-            severity: warning
-          annotations:
-            summary: "CPU 使用率过高"
-            description: "{{ $labels.pod }} CPU 使用率 {{ $value }}%"
-
-        - alert: HighMemoryUsage
-          expr: avg(container_memory_usage_bytes{namespace="default",pod=~"todo-app-.*"}) by (pod) / avg(container_spec_memory_limit_bytes{namespace="default",pod=~"todo-app-.*"}) by (pod) * 100 > 85
-          for: 5m
-          labels:
-            severity: critical
-          annotations:
-            summary: "内存使用率过高"
-            description: "{{ $labels.pod }} 内存使用率 {{ $value }}%"
-
-        - alert: PodNotReady
-          expr: kube_pod_status_ready{namespace="default",condition="true",pod=~"todo-app-.*"} == 0
+        - alert: OpsAgentDown
+          expr: absent(up{job=~".*ops-agent.*"} == 1)
           for: 2m
           labels:
             severity: critical
           annotations:
-            summary: "Pod 未就绪"
-            description: "{{ $labels.pod }} 超过 2 分钟未就绪"
+            summary: Ops Agent 无法被 Prometheus 抓取
+            description: Ops Agent metrics target 已连续 2 分钟不可用。
 
-        - alert: HighErrorRate
-          expr: rate(http_requests_total{namespace="default",status=~"5.."}[5m]) > 0.1
+        - alert: OpsAgentHigh5xxRate
+          expr: |
+            sum(rate(ops_agent_http_requests_total{status=~"5.."}[5m]))
+            /
+            clamp_min(sum(rate(ops_agent_http_requests_total[5m])), 0.001)
+            > 0.05
           for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: Ops Agent 5xx 比例超过 5%
+            description: 最近 5 分钟 Ops Agent HTTP 请求错误率持续过高。
+
+        - alert: OpsAgentRunFailures
+          expr: ops_agent_recent_failed_runs > 0
+          labels:
+            severity: warning
+          annotations:
+            summary: AgentRun 执行失败
+            description: 最近 10 分钟内存在诊断任务失败。
+
+        - alert: OpsAgentRemediationFailure
+          expr: ops_agent_recent_failed_executions > 0
           labels:
             severity: critical
           annotations:
-            summary: "5xx 错误率过高"
-            description: "{{ $labels.pod }} 5xx 错误率 {{ $value }}"
+            summary: 自动修复或结果验证失败
+            description: 受控修复没有成功完成，需要人工处理。
 
         - alert: RedisDown
-          expr: redis_up{namespace="default"} == 0
+          expr: redis_up == 0
           for: 1m
           labels:
             severity: critical
           annotations:
-            summary: "Redis 不可用"
-            description: "Redis 实例 {{ $labels.instance }} 已宕机超过 1 分钟"
+            summary: Redis 不可用
+            description: Redis exporter 报告目标实例不可用。

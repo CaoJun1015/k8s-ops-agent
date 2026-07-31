@@ -1,3 +1,13 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-data
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -20,7 +30,7 @@ spec:
     spec:
       containers:
       - name: redis
-        image: redis:alpine
+        image: redis:7-alpine
         ports:
         - containerPort: 6379
         # 资源限制（呼应简历"OOMKilled"故障处理）
@@ -48,9 +58,5 @@ spec:
           mountPath: /data
       volumes:
       - name: redis-data
-        hostPath:
-          path: /data/redis
-          type: DirectoryOrCreate
-        # 生产环境建议改用 PVC:
-        # persistentVolumeClaim:
-        #   claimName: redis-pvc
+        persistentVolumeClaim:
+          claimName: redis-data

@@ -1,119 +1,191 @@
-from flask import Flask, jsonify, request, render_template
-import redis
+"""Flask application entrypoint for K8s Ops Agent."""
+
 import os
-import uuid
-from datetime import datetime, timezone
+import time
+from datetime import datetime, timedelta, timezone
 
-app = Flask(__name__)
+import redis
+from flask import Flask, Response, g, jsonify, render_template, request
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+from sqlalchemy import text
 
-# Redis 连接配置（从环境变量读取，K8s ConfigMap/Secret 注入）
-redis_host = os.environ.get('REDIS_HOST', 'localhost')
-redis_port = int(os.environ.get('REDIS_PORT', 6379))
-redis_password = os.environ.get('REDIS_PASSWORD', None)
-
-cache = redis.Redis(
-    host=redis_host,
-    port=redis_port,
-    password=redis_password,
-    decode_responses=True
+from ops_agent.api import api
+from ops_agent.database import Database
+from ops_agent.services import OpsService
+from ops_agent.metrics import HTTP_DURATION, HTTP_REQUESTS
+from ops_agent.metrics import (
+    OPEN_INCIDENTS,
+    RECENT_FAILED_EXECUTIONS,
+    RECENT_FAILED_RUNS,
 )
+from ops_agent.domain import AgentRunStatus, ExecutionStatus, IncidentStatus
+from ops_agent.models import AgentRun, Execution, Incident
+from sqlalchemy import func, select
+from ops_agent.kubernetes_adapter import KubernetesAdapter
 
-@app.route('/')
-def index():
-    """前端页面"""
-    return render_template('index.html')
 
-@app.route('/health')
-def health():
-    """健康检查 — 返回应用状态 + K8s 环境信息"""
-    try:
-        cache.ping()
-        redis_status = "connected"
-        status_code = 200
-    except Exception:
-        redis_status = "disconnected"
-        status_code = 500
+def create_app(overrides=None) -> Flask:
+    application = Flask(__name__)
+    database_url = os.environ.get(
+        "DATABASE_URL", "sqlite+pysqlite:///:memory:"
+    )
+    application.config.from_mapping(
+        DATABASE_URL=database_url,
+        REDIS_URL=os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
+        QUEUE_MODE=os.environ.get("QUEUE_MODE", "rq"),
+        EXECUTION_MODE=os.environ.get("EXECUTION_MODE", "rq"),
+        CHECK_REDIS=True,
+        AUTO_CREATE_SCHEMA=database_url.startswith("sqlite"),
+        DIAGNOSIS_PROVIDER=os.environ.get(
+            "DIAGNOSIS_PROVIDER", "deterministic"
+        ),
+        AUTO_REMEDIATE_ENABLED=os.environ.get(
+            "AUTO_REMEDIATE_ENABLED", "false"
+        ).lower()
+        == "true",
+        ALLOWED_NAMESPACES={
+            item.strip()
+            for item in os.environ.get("ALLOWED_NAMESPACES", "default").split(",")
+            if item.strip()
+        },
+        ALERT_WEBHOOK_TOKEN=os.environ.get("ALERT_WEBHOOK_TOKEN", ""),
+        REQUIRE_OPERATOR_AUTH=os.environ.get(
+            "REQUIRE_OPERATOR_AUTH", "false"
+        ).lower()
+        == "true",
+        OPERATOR_API_TOKEN=os.environ.get("OPERATOR_API_TOKEN", ""),
+    )
+    if overrides:
+        application.config.update(overrides)
+    if application.config["TESTING"]:
+        application.config["CHECK_REDIS"] = False
 
-    # K8s Downward API 注入的环境变量
-    return jsonify({
-        "status": "ok" if redis_status == "connected" else "error",
-        "redis": redis_status,
-        "pod": os.environ.get('HOSTNAME', 'unknown'),
-        "node": os.environ.get('NODE_NAME', 'unknown')
-    }), status_code
+    database = Database(application.config["DATABASE_URL"])
+    if application.config["AUTO_CREATE_SCHEMA"]:
+        database.create_schema()
+    application.extensions["database"] = database
+    application.extensions["ops_service"] = OpsService(database.session_factory)
+    application.extensions["redis"] = redis.from_url(
+        application.config["REDIS_URL"], decode_responses=True
+    )
+    application.extensions["kubernetes_adapter"] = application.config.get(
+        "KUBERNETES_ADAPTER"
+    ) or KubernetesAdapter()
+    application.register_blueprint(api)
 
-@app.route('/api/todos', methods=['GET'])
-def get_todos():
-    """获取所有待办"""
-    todos = []
-    for key in cache.scan_iter("todo:*"):
-        todo = cache.hgetall(key)
-        if todo:
-            todos.append({
-                "id": todo.get("id"),
-                "title": todo.get("title"),
-                "done": todo.get("done") == "true",
-                "created_at": todo.get("created_at")
-            })
-    # 按创建时间排序
-    todos.sort(key=lambda x: x.get("created_at", ""), reverse=True)
-    return jsonify(todos)
+    @application.before_request
+    def start_request_timer():
+        g.request_started_at = time.perf_counter()
 
-@app.route('/api/todos', methods=['POST'])
-def add_todo():
-    """添加待办"""
-    MAX_TITLE_LENGTH = 200
-    data = request.get_json()
-    if not data or not data.get('title'):
-        return jsonify({"error": "title is required"}), 400
+    @application.after_request
+    def record_request_metrics(response):
+        endpoint = request.endpoint or "unmatched"
+        HTTP_REQUESTS.labels(
+            request.method, endpoint, str(response.status_code)
+        ).inc()
+        started_at = getattr(g, "request_started_at", None)
+        if started_at is not None:
+            HTTP_DURATION.labels(request.method, endpoint).observe(
+                time.perf_counter() - started_at
+            )
+        return response
 
-    title = data['title'].strip()
-    if not title:
-        return jsonify({"error": "title cannot be empty"}), 400
-    if len(title) > MAX_TITLE_LENGTH:
-        return jsonify({"error": f"title exceeds max length of {MAX_TITLE_LENGTH}"}), 400
+    @application.get("/")
+    def index():
+        return render_template("index.html")
 
-    todo_id = str(uuid.uuid4())[:8]
-    todo = {
-        "id": todo_id,
-        "title": title,
-        "done": "false",
-        "created_at": datetime.now(timezone.utc).isoformat()
-    }
-    cache.hset(f"todo:{todo_id}", mapping=todo)
-    return jsonify(todo), 201
+    @application.get("/live")
+    def live():
+        return jsonify({"status": "ok"})
 
-@app.route('/api/todos/<todo_id>', methods=['PUT'])
-def update_todo(todo_id):
-    """更新待办"""
-    data = request.get_json()
-    key = f"todo:{todo_id}"
-    if not cache.exists(key):
-        return jsonify({"error": "todo not found"}), 404
+    @application.get("/ready")
+    def ready():
+        checks = {}
+        try:
+            with database.session_factory() as session:
+                session.execute(text("SELECT 1"))
+            checks["database"] = "connected"
+        except Exception:
+            checks["database"] = "disconnected"
 
-    if 'title' in data:
-        cache.hset(key, "title", data['title'])
-    if 'done' in data:
-        cache.hset(key, "done", str(data['done']).lower())
+        if application.config["CHECK_REDIS"]:
+            try:
+                application.extensions["redis"].ping()
+                checks["redis"] = "connected"
+            except Exception:
+                checks["redis"] = "disconnected"
+        else:
+            checks["redis"] = "skipped"
 
-    todo = cache.hgetall(key)
-    return jsonify({
-        "id": todo.get("id"),
-        "title": todo.get("title"),
-        "done": todo.get("done") == "true",
-        "created_at": todo.get("created_at")
-    })
+        ready_status = all(
+            value in {"connected", "skipped"} for value in checks.values()
+        )
+        return (
+            jsonify(
+                {
+                    "status": "ok" if ready_status else "error",
+                    "checks": checks,
+                    "pod": os.environ.get("HOSTNAME", "unknown"),
+                    "node": os.environ.get("NODE_NAME", "unknown"),
+                }
+            ),
+            200 if ready_status else 503,
+        )
 
-@app.route('/api/todos/<todo_id>', methods=['DELETE'])
-def delete_todo(todo_id):
-    """删除待办"""
-    key = f"todo:{todo_id}"
-    if not cache.exists(key):
-        return jsonify({"error": "todo not found"}), 404
+    @application.get("/health")
+    def legacy_health():
+        return ready()
 
-    cache.delete(key)
-    return jsonify({"success": True})
+    @application.get("/metrics")
+    def metrics():
+        with database.session_factory() as session:
+            open_count = session.scalar(
+                select(func.count())
+                .select_from(Incident)
+                .where(
+                    Incident.status.notin_(
+                        [IncidentStatus.RESOLVED, IncidentStatus.CLOSED]
+                    )
+                )
+            )
+        OPEN_INCIDENTS.set(open_count or 0)
+        since = datetime.now(timezone.utc) - timedelta(minutes=10)
+        with database.session_factory() as session:
+            RECENT_FAILED_RUNS.set(
+                session.scalar(
+                    select(func.count())
+                    .select_from(AgentRun)
+                    .where(
+                        AgentRun.status == AgentRunStatus.FAILED,
+                        AgentRun.finished_at >= since,
+                    )
+                )
+                or 0
+            )
+            RECENT_FAILED_EXECUTIONS.set(
+                session.scalar(
+                    select(func.count())
+                    .select_from(Execution)
+                    .where(
+                        Execution.status.in_(
+                            [
+                                ExecutionStatus.FAILED,
+                                ExecutionStatus.VERIFICATION_FAILED,
+                            ]
+                        ),
+                        Execution.finished_at >= since,
+                    )
+                )
+                or 0
+            )
+        return Response(generate_latest(), mimetype=CONTENT_TYPE_LATEST)
 
-if __name__ == '__main__':
-    debug_mode = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
-    app.run(host='0.0.0.0', port=5000, debug=debug_mode)
+    return application
+
+
+app = create_app()
+
+
+if __name__ == "__main__":
+    debug_mode = os.environ.get("FLASK_DEBUG", "False").lower() == "true"
+    app.run(host="0.0.0.0", port=5000, debug=debug_mode)

@@ -1,22 +1,75 @@
 version: '3.8'
 
 services:
+  postgres:
+    image: postgres:17-alpine
+    restart: always
+    environment:
+      POSTGRES_DB: ops_agent
+      POSTGRES_USER: ops_agent
+      POSTGRES_PASSWORD: ops_agent
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ops_agent -d ops_agent"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
   redis:
     image: redis:alpine
     restart: always
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
     volumes:
       - redis-data:/data
+
+  migrate:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    command: ["alembic", "-c", "alembic.ini", "upgrade", "head"]
+    environment: &ops-agent-env
+      DATABASE_URL: postgresql+psycopg://ops_agent:ops_agent@postgres:5432/ops_agent
+      REDIS_URL: redis://redis:6379/0
+      QUEUE_MODE: rq
+      EXECUTION_MODE: rq
+      AUTO_REMEDIATE_ENABLED: "false"
+      ALLOWED_NAMESPACES: default
+      REQUIRE_OPERATOR_AUTH: "true"
+      OPERATOR_API_TOKEN: change-me-operator-token
+      ALERT_WEBHOOK_TOKEN: change-me-alert-token
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   flask:
     build:
       context: ..
       dockerfile: docker/Dockerfile
     restart: always
-    environment:
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
+    environment: *ops-agent-env
     depends_on:
-      - redis
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    command: ["rq", "worker", "--url", "redis://redis:6379/0", "agent-runs", "executions"]
+    restart: always
+    environment: *ops-agent-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
 
   nginx:
     build:
@@ -29,4 +82,5 @@ services:
       - flask
 
 volumes:
+  postgres-data:
   redis-data:

@@ -1,296 +1,204 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>K8s Todo App</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            padding: 20px;
-        }
-        .container {
-            max-width: 600px;
-            margin: 0 auto;
-            background: white;
-            border-radius: 16px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-            overflow: hidden;
-        }
-        .header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 30px;
-            text-align: center;
-        }
-        .header h1 {
-            font-size: 28px;
-            margin-bottom: 8px;
-        }
-        .header p {
-            opacity: 0.9;
-            font-size: 14px;
-        }
-        .input-section {
-            padding: 20px 30px;
-            border-bottom: 1px solid #eee;
-            display: flex;
-            gap: 10px;
-        }
-        .input-section input {
-            flex: 1;
-            padding: 12px 16px;
-            border: 2px solid #e0e0e0;
-            border-radius: 8px;
-            font-size: 16px;
-            transition: border-color 0.3s;
-        }
-        .input-section input:focus {
-            outline: none;
-            border-color: #667eea;
-        }
-        .input-section button {
-            padding: 12px 24px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            border: none;
-            border-radius: 8px;
-            font-size: 16px;
-            cursor: pointer;
-            transition: transform 0.2s;
-        }
-        .input-section button:hover {
-            transform: scale(1.05);
-        }
-        .todo-list {
-            padding: 10px 30px 30px;
-        }
-        .todo-item {
-            display: flex;
-            align-items: center;
-            padding: 16px 0;
-            border-bottom: 1px solid #f0f0f0;
-            animation: fadeIn 0.3s ease;
-        }
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(-10px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-        .todo-item.done .todo-title {
-            text-decoration: line-through;
-            color: #999;
-        }
-        .todo-checkbox {
-            width: 24px;
-            height: 24px;
-            border: 2px solid #ddd;
-            border-radius: 50%;
-            margin-right: 16px;
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            transition: all 0.3s;
-        }
-        .todo-item.done .todo-checkbox {
-            background: #667eea;
-            border-color: #667eea;
-        }
-        .todo-item.done .todo-checkbox::after {
-            content: '✓';
-            color: white;
-            font-size: 14px;
-        }
-        .todo-title {
-            flex: 1;
-            font-size: 16px;
-            color: #333;
-        }
-        .todo-delete {
-            width: 32px;
-            height: 32px;
-            border: none;
-            background: #ff4757;
-            color: white;
-            border-radius: 50%;
-            cursor: pointer;
-            font-size: 18px;
-            opacity: 0;
-            transition: opacity 0.3s;
-        }
-        .todo-item:hover .todo-delete {
-            opacity: 1;
-        }
-        .empty-state {
-            text-align: center;
-            padding: 40px;
-            color: #999;
-        }
-        .empty-state p {
-            font-size: 18px;
-            margin-bottom: 8px;
-        }
-        .stats {
-            padding: 15px 30px;
-            background: #f8f9fa;
-            font-size: 14px;
-            color: #666;
-            display: flex;
-            justify-content: space-between;
-        }
-        .tech-stack {
-            padding: 20px 30px;
-            background: #f8f9fa;
-            border-top: 1px solid #eee;
-            text-align: center;
-            font-size: 12px;
-            color: #999;
-        }
-        .tech-stack span {
-            margin: 0 8px;
-            padding: 4px 8px;
-            background: #e9ecef;
-            border-radius: 4px;
-        }
-    </style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>K8s Ops Agent</title>
+  <style>
+    :root { color-scheme: dark; --bg:#08111f; --panel:#101d30; --line:#23344e; --text:#e8eef8; --muted:#94a3b8; --accent:#38bdf8; --ok:#34d399; --warn:#fbbf24; --bad:#fb7185; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family:Inter,ui-sans-serif,system-ui,sans-serif; background:radial-gradient(circle at top right,#172554 0,var(--bg) 42%); color:var(--text); min-height:100vh; }
+    header { padding:28px 36px 18px; display:flex; align-items:end; justify-content:space-between; border-bottom:1px solid var(--line); }
+    h1 { margin:0; font-size:28px; letter-spacing:-.04em; }
+    header p { margin:6px 0 0; color:var(--muted); }
+    .live { color:var(--ok); font-size:13px; }
+    main { padding:24px 36px 40px; max-width:1440px; margin:auto; }
+    .stats { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-bottom:20px; }
+    .stat,.panel { background:rgba(16,29,48,.92); border:1px solid var(--line); border-radius:14px; }
+    .stat { padding:18px; }
+    .stat span { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.08em; }
+    .stat strong { display:block; font-size:28px; margin-top:6px; }
+    .grid { display:grid; grid-template-columns:1.3fr 1fr; gap:18px; }
+    .workflow { margin-top:18px; }
+    .panel { overflow:hidden; }
+    .panel-head { padding:16px 18px; display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid var(--line); }
+    .panel h2 { font-size:16px; margin:0; }
+    .list { max-height:560px; overflow:auto; }
+    .item { padding:15px 18px; border-bottom:1px solid var(--line); cursor:pointer; }
+    .item:hover { background:#14243b; }
+    .item-title { display:flex; justify-content:space-between; gap:12px; font-weight:650; }
+    .meta { color:var(--muted); font-size:12px; margin-top:7px; display:flex; gap:12px; flex-wrap:wrap; }
+    .badge { border:1px solid var(--line); padding:2px 7px; border-radius:999px; font-size:11px; }
+    .CRITICAL,.HIGH { color:var(--bad); } .MEDIUM { color:var(--warn); } .LOW,.DONE,.RESOLVED { color:var(--ok); }
+    form { padding:16px 18px; display:grid; gap:10px; border-bottom:1px solid var(--line); }
+    input,select,textarea { width:100%; padding:10px 11px; color:var(--text); background:#091525; border:1px solid var(--line); border-radius:8px; }
+    textarea { min-height:70px; resize:vertical; }
+    button { border:0; border-radius:8px; padding:9px 12px; background:var(--accent); color:#042033; font-weight:700; cursor:pointer; }
+    button.secondary { background:#263a57; color:var(--text); }
+    button:disabled { opacity:.45; cursor:not-allowed; }
+    .actions { display:flex; gap:8px; margin-top:10px; }
+    .empty { color:var(--muted); padding:32px 18px; text-align:center; }
+    .error { color:var(--bad); padding:10px 18px; display:none; }
+    @media (max-width:900px) { .stats{grid-template-columns:repeat(2,1fr)} .grid{grid-template-columns:1fr} header,main{padding-left:18px;padding-right:18px} }
+  </style>
 </head>
 <body>
-    <div class="container">
-        <div class="header">
-            <h1>📝 K8s Todo App</h1>
-            <p>Flask + Redis + Docker + Kubernetes</p>
-        </div>
-
-        <div class="input-section">
-            <input type="text" id="todoInput" placeholder="添加新的待办事项..." autofocus>
-            <button onclick="addTodo()">添加</button>
-        </div>
-
-        <div class="todo-list" id="todoList">
-            <div class="empty-state">
-                <p>暂无待办事项</p>
-                <p>👆 添加一个开始吧</p>
-            </div>
-        </div>
-
-        <div class="stats" id="stats" style="display: none;">
-            <span id="totalCount">总计: 0</span>
-            <span id="doneCount">已完成: 0</span>
-        </div>
-
-        <div class="tech-stack">
-            <span>Python Flask</span>
-            <span>Redis</span>
-            <span>Docker</span>
-            <span>Kubernetes</span>
-            <span>Nginx</span>
-        </div>
+  <header>
+    <div><h1>⚙ K8s Ops Agent</h1><p>事件 · 诊断 · 行动项 · 受控修复</p></div>
+    <div class="live" id="health">● 正在检查</div>
+  </header>
+  <main>
+    <section class="stats">
+      <div class="stat"><span>活动事件</span><strong id="openCount">0</strong></div>
+      <div class="stat"><span>严重事件</span><strong id="criticalCount">0</strong></div>
+      <div class="stat"><span>待处理任务</span><strong id="taskCount">0</strong></div>
+      <div class="stat"><span>已完成任务</span><strong id="doneCount">0</strong></div>
+    </section>
+    <div class="grid">
+      <section class="panel">
+        <div class="panel-head"><h2>Incident 事件中心</h2><button class="secondary" onclick="loadAll()">刷新</button></div>
+        <form id="incidentForm">
+          <input id="incidentTitle" maxlength="200" placeholder="手动登记事件标题" required>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+            <input id="resourceName" placeholder="资源名，例如 demo-123" required>
+            <select id="severity"><option>MEDIUM</option><option>HIGH</option><option>CRITICAL</option><option>LOW</option></select>
+          </div>
+          <button type="submit">创建事件</button>
+        </form>
+        <div id="incidentError" class="error"></div>
+        <div class="list" id="incidentList"><div class="empty">暂无事件</div></div>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><h2>Action Task 行动项</h2><span class="badge" id="selectedIncident">请选择事件</span></div>
+        <form id="taskForm">
+          <input id="taskTitle" maxlength="200" placeholder="为所选事件添加行动项" required disabled>
+          <select id="taskPriority" disabled><option>MEDIUM</option><option>HIGH</option><option>CRITICAL</option><option>LOW</option></select>
+          <button id="taskSubmit" type="submit" disabled>添加行动项</button>
+        </form>
+        <div id="taskError" class="error"></div>
+        <div class="list" id="taskList"><div class="empty">选择一个 Incident 查看行动项</div></div>
+      </section>
     </div>
-
-    <script>
-        const API_URL = '/api/todos';
-
-        // 页面加载时获取待办列表
-        document.addEventListener('DOMContentLoaded', loadTodos);
-
-        // 回车添加待办
-        document.getElementById('todoInput').addEventListener('keypress', function(e) {
-            if (e.key === 'Enter') addTodo();
-        });
-
-        async function loadTodos() {
-            try {
-                const response = await fetch(API_URL);
-                const todos = await response.json();
-                renderTodos(todos);
-            } catch (error) {
-                console.error('加载失败:', error);
-            }
-        }
-
-        async function addTodo() {
-            const input = document.getElementById('todoInput');
-            const title = input.value.trim();
-            if (!title) return;
-
-            try {
-                const response = await fetch(API_URL, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ title })
-                });
-                if (response.ok) {
-                    input.value = '';
-                    loadTodos();
-                }
-            } catch (error) {
-                console.error('添加失败:', error);
-            }
-        }
-
-        async function toggleTodo(id, done) {
-            try {
-                await fetch(`${API_URL}/${id}`, {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ done: !done })
-                });
-                loadTodos();
-            } catch (error) {
-                console.error('更新失败:', error);
-            }
-        }
-
-        async function deleteTodo(id) {
-            try {
-                await fetch(`${API_URL}/${id}`, { method: 'DELETE' });
-                loadTodos();
-            } catch (error) {
-                console.error('删除失败:', error);
-            }
-        }
-
-        function renderTodos(todos) {
-            const list = document.getElementById('todoList');
-            const stats = document.getElementById('stats');
-
-            if (todos.length === 0) {
-                list.innerHTML = `
-                    <div class="empty-state">
-                        <p>暂无待办事项</p>
-                        <p>👆 添加一个开始吧</p>
-                    </div>
-                `;
-                stats.style.display = 'none';
-                return;
-            }
-
-            stats.style.display = 'flex';
-            const doneCount = todos.filter(t => t.done).length;
-            document.getElementById('totalCount').textContent = `总计: ${todos.length}`;
-            document.getElementById('doneCount').textContent = `已完成: ${doneCount}`;
-
-            list.innerHTML = todos.map(todo => `
-                <div class="todo-item ${todo.done ? 'done' : ''}">
-                    <div class="todo-checkbox" onclick="toggleTodo('${todo.id}', ${todo.done})"></div>
-                    <span class="todo-title">${escapeHtml(todo.title)}</span>
-                    <button class="todo-delete" onclick="deleteTodo('${todo.id}')">×</button>
-                </div>
-            `).join('');
-        }
-
-        function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
-        }
-    </script>
+    <section class="panel workflow">
+      <div class="panel-head">
+        <h2>Plan / Execution 受控修复</h2>
+        <input id="operatorToken" type="password" placeholder="Operator Token（仅当前页面内存）" style="max-width:330px">
+      </div>
+      <div id="workflowError" class="error"></div>
+      <div class="list" id="workflowList"><div class="empty">选择一个 Incident 查看修复工作流</div></div>
+    </section>
+  </main>
+  <script>
+    let incidents=[], tasks=[], plans=[], executions=[], selectedId=null;
+    const escapeHtml = value => { const node=document.createElement('div'); node.textContent=value ?? ''; return node.innerHTML; };
+    async function api(path, options={}) {
+      const response=await fetch(path,{...options,headers:{'Content-Type':'application/json',...(options.headers||{})}});
+      const data=await response.json();
+      if(!response.ok) throw new Error(data.error?.message || `HTTP ${response.status}`);
+      return data;
+    }
+    async function loadAll() {
+      try {
+        [incidents,tasks,plans,executions]=await Promise.all([api('/api/incidents'),api('/api/tasks'),api('/api/plans'),api('/api/executions')]);
+        renderIncidents(); renderTasks(); renderWorkflow(); renderStats();
+        const ready=await api('/ready'); document.getElementById('health').textContent=ready.status==='ok'?'● 系统就绪':'● 依赖异常';
+      } catch(error) { showError('incidentError',error.message); }
+    }
+    function renderStats() {
+      document.getElementById('openCount').textContent=incidents.filter(i=>!['RESOLVED','CLOSED'].includes(i.status)).length;
+      document.getElementById('criticalCount').textContent=incidents.filter(i=>i.severity==='CRITICAL'&&!['RESOLVED','CLOSED'].includes(i.status)).length;
+      document.getElementById('taskCount').textContent=tasks.filter(t=>!['DONE','CANCELLED'].includes(t.status)).length;
+      document.getElementById('doneCount').textContent=tasks.filter(t=>t.status==='DONE').length;
+    }
+    function renderIncidents() {
+      const list=document.getElementById('incidentList');
+      if(!incidents.length){list.innerHTML='<div class="empty">暂无事件</div>';return;}
+      list.innerHTML=incidents.map(i=>`<div class="item" onclick="selectIncident('${i.id}')">
+        <div class="item-title"><span>${escapeHtml(i.title)}</span><span class="${i.severity}">${i.severity}</span></div>
+        <div class="meta"><span>${escapeHtml(i.namespace)}/${escapeHtml(i.resource_name)}</span><span class="badge">${i.status}</span><span>×${i.version}</span></div>
+        ${i.status==='OPEN'?`<div class="actions"><button onclick="event.stopPropagation();diagnose('${i.id}')">启动诊断</button></div>`:''}
+        ${i.status==='DIAGNOSED'&&i.resource_kind==='Pod'?`<div class="actions"><button onclick="event.stopPropagation();createRestartPlan('${i.id}')">生成 Pod 重建计划</button></div>`:''}
+      </div>`).join('');
+    }
+    function selectIncident(id) {
+      selectedId=id; const incident=incidents.find(item=>item.id===id);
+      document.getElementById('selectedIncident').textContent=incident?.title||id;
+      for(const id of ['taskTitle','taskPriority','taskSubmit']) document.getElementById(id).disabled=false;
+      renderTasks(); renderWorkflow();
+    }
+    function operatorHeaders() {
+      const token=document.getElementById('operatorToken').value.trim();
+      return {'Authorization':`Bearer ${token}`,'X-Actor-ID':'ops-console-user'};
+    }
+    function renderWorkflow() {
+      const list=document.getElementById('workflowList');
+      if(!selectedId){list.innerHTML='<div class="empty">选择一个 Incident 查看修复工作流</div>';return;}
+      const incidentPlans=plans.filter(p=>p.incident_id===selectedId);
+      if(!incidentPlans.length){list.innerHTML='<div class="empty">该事件暂无修复计划</div>';return;}
+      list.innerHTML=incidentPlans.map(p=>{
+        const related=executions.filter(e=>e.plan_id===p.id);
+        return `<div class="item"><div class="item-title"><span>${escapeHtml(p.action_type)}</span><span class="badge">${p.status}</span></div>
+          <div class="meta"><span>${escapeHtml(p.target.namespace)}/${escapeHtml(p.target.pod_name)}</span><span>风险 ${p.risk_level}</span><span>${p.dry_run_result?.reason||'尚未 dry-run'}</span></div>
+          <div class="actions">
+            ${p.status==='DRAFT'?`<button onclick="dryRun('${p.id}')">执行 dry-run</button>`:''}
+            ${p.status==='AWAITING_APPROVAL'?`<button onclick="approvePlan('${p.id}')">批准</button><button class="secondary" onclick="rejectPlan('${p.id}')">拒绝</button>`:''}
+            ${p.status==='EXECUTABLE'?`<button onclick="executePlan('${p.id}')">执行修复</button>`:''}
+          </div>
+          ${related.map(e=>`<div class="meta"><span>Execution</span><span class="badge ${e.status}">${e.status}</span><span>${e.verification_result?.healthy===true?'验证通过':escapeHtml(e.error||'等待执行')}</span></div>`).join('')}
+        </div>`;
+      }).join('');
+    }
+    async function createRestartPlan(incidentId) {
+      try { await api(`/api/incidents/${incidentId}/plans`,{method:'POST',body:JSON.stringify({action_type:'RESTART_CONTROLLER_MANAGED_POD',target:{}})}); await loadAll(); selectIncident(incidentId); }
+      catch(error){showError('workflowError',error.message);}
+    }
+    async function dryRun(planId) {
+      try { await api(`/api/plans/${planId}/dry-run`,{method:'POST'}); await loadAll(); selectIncident(selectedId); }
+      catch(error){showError('workflowError',error.message);}
+    }
+    async function approvePlan(planId) {
+      try { await api(`/api/plans/${planId}/approve`,{method:'POST',headers:operatorHeaders(),body:JSON.stringify({comment:'Ops Console 批准'})}); await loadAll(); selectIncident(selectedId); }
+      catch(error){showError('workflowError',error.message);}
+    }
+    async function rejectPlan(planId) {
+      try { await api(`/api/plans/${planId}/reject`,{method:'POST',headers:operatorHeaders(),body:JSON.stringify({comment:'Ops Console 拒绝'})}); await loadAll(); selectIncident(selectedId); }
+      catch(error){showError('workflowError',error.message);}
+    }
+    async function executePlan(planId) {
+      try { await api(`/api/plans/${planId}/execute`,{method:'POST',headers:{...operatorHeaders(),'Idempotency-Key':`ui-execution:${planId}`}}); await loadAll(); selectIncident(selectedId); }
+      catch(error){showError('workflowError',error.message);}
+    }
+    function renderTasks() {
+      const list=document.getElementById('taskList');
+      if(!selectedId){list.innerHTML='<div class="empty">选择一个 Incident 查看行动项</div>';return;}
+      const filtered=tasks.filter(t=>t.incident_id===selectedId);
+      if(!filtered.length){list.innerHTML='<div class="empty">该事件暂无行动项</div>';return;}
+      list.innerHTML=filtered.map(t=>`<div class="item"><div class="item-title"><span>${escapeHtml(t.title)}</span><span class="${t.priority}">${t.priority}</span></div>
+        <div class="meta"><span class="badge ${t.status}">${t.status}</span><span>${t.task_type}</span></div>
+        ${t.status==='TODO'?`<div class="actions"><button class="secondary" onclick="moveTask('${t.id}','IN_PROGRESS')">开始处理</button></div>`:''}
+        ${t.status==='IN_PROGRESS'?`<div class="actions"><button onclick="moveTask('${t.id}','DONE')">标记完成</button><button class="secondary" onclick="moveTask('${t.id}','BLOCKED')">阻塞</button></div>`:''}
+      </div>`).join('');
+    }
+    async function diagnose(id) {
+      try { await api(`/api/incidents/${id}/agent-runs`,{method:'POST',body:JSON.stringify({mode:'DIAGNOSE_ONLY'}),headers:{'Idempotency-Key':`ui:${id}:${Date.now()}`}}); await loadAll(); }
+      catch(error){showError('incidentError',error.message);}
+    }
+    async function moveTask(id,status) {
+      try { await api(`/api/tasks/${id}`,{method:'PATCH',body:JSON.stringify({status})}); await loadAll(); }
+      catch(error){showError('taskError',error.message);}
+    }
+    document.getElementById('incidentForm').addEventListener('submit',async event=>{
+      event.preventDefault(); const resource=document.getElementById('resourceName').value.trim();
+      try { const incident=await api('/api/incidents',{method:'POST',body:JSON.stringify({title:document.getElementById('incidentTitle').value,severity:document.getElementById('severity').value,fingerprint:`manual:default:Pod:${resource}:${Date.now()}`,cluster:'local',namespace:'default',resource_kind:'Pod',resource_name:resource,source:'manual'})}); event.target.reset(); selectedId=incident.id; await loadAll(); selectIncident(incident.id); }
+      catch(error){showError('incidentError',error.message);}
+    });
+    document.getElementById('taskForm').addEventListener('submit',async event=>{
+      event.preventDefault(); if(!selectedId)return;
+      try { await api('/api/tasks',{method:'POST',body:JSON.stringify({incident_id:selectedId,title:document.getElementById('taskTitle').value,priority:document.getElementById('taskPriority').value,task_type:'MANUAL_CHECK'})}); event.target.reset(); await loadAll(); selectIncident(selectedId); }
+      catch(error){showError('taskError',error.message);}
+    });
+    function showError(id,message){const node=document.getElementById(id);node.textContent=message;node.style.display='block';setTimeout(()=>node.style.display='none',5000);}
+    loadAll();
+  </script>
 </body>
 </html>

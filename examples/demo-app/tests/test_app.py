@@ -1,5 +1,5 @@
 """
-测试用例：Flask Todo 应用
+测试用例：端到端故障演练用 Flask Todo 应用
 
 覆盖场景：
 - 正常场景：CRUD 完整流程
@@ -10,7 +10,7 @@
 import pytest
 import json
 from unittest.mock import patch, MagicMock
-from app import app
+from demo_app import app
 
 
 @pytest.fixture
@@ -24,7 +24,7 @@ def client():
 @pytest.fixture
 def mock_redis():
     """Mock Redis 连接，避免依赖真实 Redis 服务"""
-    with patch('app.cache') as mock_cache:
+    with patch('demo_app.cache') as mock_cache:
         # 默认健康检查通过
         mock_cache.ping.return_value = True
         yield mock_cache

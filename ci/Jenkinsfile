@@ -1,8 +1,12 @@
 pipeline {
     agent any
 
+    parameters {
+        string(name: 'DOCKER_REGISTRY', defaultValue: 'registry.example.com', description: 'Docker registry host')
+        string(name: 'DOCKER_IMAGE', defaultValue: 'ops-agent', description: 'Repository name')
+    }
+
     environment {
-        DOCKER_IMAGE = 'todo-app'
         DOCKER_TAG   = "${BUILD_NUMBER}"
         K8S_NAMESPACE = 'default'
     }
@@ -17,14 +21,13 @@ pipeline {
 
         stage('Test') {
             steps {
-                dir('app') {
-                    sh 'pip install -r requirements.txt'
-                    sh 'python -m pytest tests/ -v --junitxml=reports/junit.xml'
-                }
+                sh 'pip install -r app/requirements.txt'
+                sh 'python -m pytest app/tests/ -v --junitxml=reports/junit.xml'
+                sh 'python -m pytest examples/demo-app/tests/ -v --junitxml=reports/demo-junit.xml'
             }
             post {
                 always {
-                    junit 'app/reports/junit.xml'
+                    junit 'reports/*.xml'
                 }
             }
         }
@@ -33,24 +36,46 @@ pipeline {
             steps {
                 sh """
                     docker build \
-                        -t ${DOCKER_IMAGE}:${DOCKER_TAG} \
-                        -t ${DOCKER_IMAGE}:latest \
+                        -t ${params.DOCKER_REGISTRY}/${params.DOCKER_IMAGE}:${DOCKER_TAG} \
+                        -t ${params.DOCKER_REGISTRY}/${params.DOCKER_IMAGE}:latest \
                         -f docker/Dockerfile .
                 """
-                // 推送到镜像仓库（按需配置）
-                // sh "docker push ${DOCKER_IMAGE}:${DOCKER_TAG}"
-                // sh "docker push ${DOCKER_IMAGE}:latest"
+                withCredentials([usernamePassword(
+                    credentialsId: 'docker-registry-credentials',
+                    usernameVariable: 'REGISTRY_USER',
+                    passwordVariable: 'REGISTRY_PASSWORD'
+                )]) {
+                    sh """
+                        echo "\${REGISTRY_PASSWORD}" | docker login \
+                            ${params.DOCKER_REGISTRY} \
+                            --username "\${REGISTRY_USER}" --password-stdin
+                        docker push ${params.DOCKER_REGISTRY}/${params.DOCKER_IMAGE}:${DOCKER_TAG}
+                        docker push ${params.DOCKER_REGISTRY}/${params.DOCKER_IMAGE}:latest
+                    """
+                }
             }
         }
 
         stage('Deploy to K8s') {
             steps {
                 sh """
-                    kubectl set image deployment/todo-app \
-                        app=${DOCKER_IMAGE}:${DOCKER_TAG} \
-                        -n ${K8S_NAMESPACE} --record
+                    kubectl delete job ops-agent-db-migrate \
+                        -n ${K8S_NAMESPACE} --ignore-not-found
+                    sed 's#image: ops-agent:v1#image: ${params.DOCKER_REGISTRY}/${params.DOCKER_IMAGE}:${DOCKER_TAG}#' \
+                        k8s/migration-job.yaml | kubectl apply -n ${K8S_NAMESPACE} -f -
+                    kubectl wait --for=condition=complete \
+                        job/ops-agent-db-migrate -n ${K8S_NAMESPACE} --timeout=180s
                 """
-                sh "kubectl rollout status deployment/todo-app -n ${K8S_NAMESPACE} --timeout=120s"
+                sh """
+                    kubectl set image deployment/ops-agent \
+                        ops-agent=${params.DOCKER_REGISTRY}/${params.DOCKER_IMAGE}:${DOCKER_TAG} \
+                        -n ${K8S_NAMESPACE}
+                    kubectl set image deployment/ops-agent-worker \
+                        worker=${params.DOCKER_REGISTRY}/${params.DOCKER_IMAGE}:${DOCKER_TAG} \
+                        -n ${K8S_NAMESPACE}
+                """
+                sh "kubectl rollout status deployment/ops-agent -n ${K8S_NAMESPACE} --timeout=120s"
+                sh "kubectl rollout status deployment/ops-agent-worker -n ${K8S_NAMESPACE} --timeout=120s"
             }
         }
     }

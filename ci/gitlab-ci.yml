@@ -4,23 +4,25 @@ stages:
   - deploy
 
 variables:
-  DOCKER_IMAGE: "todo-app"
+  DOCKER_IMAGE: "ops-agent"
   DOCKER_TAG: "$CI_COMMIT_SHORT_SHA"
 
 test:
   stage: test
   image: python:3.11-slim
   before_script:
-    - cd app
-    - pip install -r requirements.txt
+    - pip install -r app/requirements.txt
   script:
-    - python -m pytest tests/ -v --junitxml=reports/junit.xml
+    - python -m pytest app/tests/ -v --junitxml=reports/junit.xml
+    - python -m pytest examples/demo-app/tests/ -v --junitxml=reports/demo-junit.xml
   artifacts:
     when: always
     reports:
-      junit: app/reports/junit.xml
+      junit:
+        - reports/junit.xml
+        - reports/demo-junit.xml
     paths:
-      - app/reports/
+      - reports/
 
 build:
   stage: build
@@ -47,8 +49,15 @@ deploy:
   before_script:
     - kubectl config use-context $KUBE_CONTEXT
   script:
-    - kubectl set image deployment/todo-app flask=$CI_REGISTRY_IMAGE:$DOCKER_TAG -n default
-    - kubectl rollout status deployment/todo-app -n default --timeout=120s
+    - kubectl delete job ops-agent-db-migrate -n default --ignore-not-found
+    - |
+      sed "s#image: ops-agent:v1#image: $CI_REGISTRY_IMAGE:$DOCKER_TAG#" \
+        k8s/migration-job.yaml | kubectl apply -n default -f -
+    - kubectl wait --for=condition=complete job/ops-agent-db-migrate -n default --timeout=180s
+    - kubectl set image deployment/ops-agent ops-agent=$CI_REGISTRY_IMAGE:$DOCKER_TAG -n default
+    - kubectl set image deployment/ops-agent-worker worker=$CI_REGISTRY_IMAGE:$DOCKER_TAG -n default
+    - kubectl rollout status deployment/ops-agent -n default --timeout=120s
+    - kubectl rollout status deployment/ops-agent-worker -n default --timeout=120s
   only:
     - main
     - master

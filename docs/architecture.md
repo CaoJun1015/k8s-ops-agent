@@ -1,140 +1,21 @@
-# 架构说明
+# K8s Ops Agent 架构
 
-## 项目定位
+## 控制面与演练面
 
-基于K8s的智能运维Agent，从传统脚本巡检进化到AI辅助运维。
+主应用是模块化单体控制面：Flask 提供 API 和控制台，PostgreSQL 保存 Incident、
+Action Task、Plan、Execution、AgentRun 和 Audit；Redis/RQ 负责异步工作。
 
-## 架构演进
+`examples/demo-app/` 是完全独立的演练面。它不是 Ops Agent 的业务数据库，也不会
+把通用 Todo 概念带入运维领域。
 
-```
-传统运维（你学的第一阶段）：
-  手动执行命令 → 人眼看结果 → 人判断问题 → 人处理
+## 核心约束
 
-脚本运维（你学的第二阶段）：
-  crontab + 脚本自动执行 → 输出报告 → 人看报告 → 人处理
+- 告警先聚合为 Incident，相同活动 fingerprint 不重复建事件。
+- AgentRun 第一职责是采集和诊断，不能提交任意 Shell 命令。
+- 修复动作只能来自 Action Catalog，目前仅有控制器管理的异常 Pod 重建。
+- 所有动作都经过 dry-run、策略检查、审批记录、幂等 Execution 和结果验证。
+- 自动修复默认关闭；功能开关不能绕过命名空间、UID、控制器和健康状态校验。
+- Audit 只追加，失败执行也必须提交审计和人工跟进 Task。
+- `/live` 只表示进程存活，`/ready` 检查 PostgreSQL 与 Redis。
 
-Agent运维（本项目）：
-  Agent自动采集 → AI分析根因 → Agent自动修复 → 通知人确认
-```
-
-## 系统架构
-
-```
-┌─────────────────────────────────────────────┐
-│              K8s Ops Agent                   │
-├─────────────────────────────────────────────┤
-│                                             │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  │
-│  │ 巡检脚本  │  │ 日志分析  │  │ 故障自愈  │  │
-│  │ daily-   │  │ log-     │  │ auto-    │  │
-│  │ inspect  │  │ analyzer │  │ fix      │  │
-│  └────┬─────┘  └────┬─────┘  └────┬─────┘  │
-│       │              │              │       │
-│       ▼              ▼              ▼       │
-│  ┌──────────────────────────────────────┐   │
-│  │         Agent 层（AI增强）            │   │
-│  │  ┌──────────┐  ┌──────────────────┐  │   │
-│  │  │ 分析引擎  │  │ 报告生成器        │  │   │
-│  │  │ analyze  │  │ report           │  │   │
-│  │  └──────────┘  └──────────────────┘  │   │
-│  └──────────────────────────────────────┘   │
-│       │                                     │
-│       ▼                                     │
-│  ┌──────────┐                               │
-│  │ 告警通知  │                               │
-│  │ alert    │                               │
-│  └──────────┘                               │
-│                                             │
-├─────────────────────────────────────────────┤
-│  config/threshold.conf — 阈值配置           │
-│  reports/              — 巡检报告           │
-├─────────────────────────────────────────────┤
-│  ci/                   — CI/CD 流水线       │
-│  monitoring/           — Prometheus+Grafana │
-└─────────────────────────────────────────────┘
-```
-
-## 模块说明
-
-### ops/ — 运维工具层
-
-| 脚本 | 功能 | 触发方式 |
-|------|------|----------|
-| daily-inspection.sh | 日常巡检（节点/Pod/资源/事件） | crontab定时 |
-| log-analyzer.sh | 日志分析（级别统计/错误提取） | 手动/Agent调用 |
-| auto-fix.sh | 故障自愈（重启异常Pod/清理垃圾） | crontab/告警触发 |
-| alert.sh | 告警通知（飞书/钉钉/企业微信） | 其他脚本调用 |
-
-### agent/ — AI增强层
-
-| 脚本 | 功能 | 依赖 |
-|------|------|------|
-| analyze.sh | 调用LLM分析日志，给出根因和修复建议 | OpenAI/Claude API |
-| report.sh | 生成自然语言巡检报告 | kubectl |
-
-### config/ — 配置层
-
-| 文件 | 用途 |
-|------|------|
-| threshold.conf | 告警阈值、Webhook地址、监控范围 |
-
-### ci/ — CI/CD 流水线层
-
-| 文件 | 用途 | 平台 |
-|------|------|------|
-| Jenkinsfile | Jenkins Pipeline 配置 | Jenkins |
-| gitlab-ci.yml | GitLab CI/CD 配置 | GitLab |
-| README.md | 流水线使用说明 | — |
-
-流水线流程：代码提交 → 单元测试 → 多阶段构建 Docker 镜像 → 推送 Harbor → kubectl set image 滚动更新
-
-分支策略：
-- develop 分支 → 自动部署 dev 环境
-- main 分支 → 自动部署 staging 环境
-- prod 部署 → Jenkins 参数手动触发
-
-### monitoring/ — 监控告警层
-
-| 文件 | 用途 |
-|------|------|
-| namespace.yaml | monitoring 命名空间 |
-| prometheus-config.yaml | Prometheus 采集配置（含 K8s 服务发现） |
-| prometheus-alert-rules.yaml | 告警规则（Pod 重启/CPU/内存/5xx/Redis） |
-| grafana-dashboards.yaml | Grafana Dashboard 配置 |
-| README.md | 监控体系说明 |
-
-架构：Prometheus 定期采集指标 → AlertManager 接收告警 → Webhook 通知飞书/企业微信 → Grafana 可视化面板
-
-## 技术栈
-
-```
-Shell脚本     — 核心逻辑
-kubectl       — K8s集群操作
-curl          — HTTP请求（告警Webhook、LLM API）
-grep/awk/sed  — 文本处理
-crontab       — 定时调度
-OpenAI/Claude — AI分析（可选）
-Jenkins       — CI/CD 流水线
-Prometheus    — 指标采集与告警
-Grafana       — 可视化面板
-```
-
-## 工作流
-
-```
-定时触发（crontab）
-  → daily-inspection.sh 采集数据
-  → 如果有告警：
-      → alert.sh 发送通知
-      → auto-fix.sh 尝试自动修复
-      → analyze.sh 调用AI分析根因
-  → report.sh 生成报告
-  → 存入 reports/ 目录
-```
-
-## 与传统巡检脚本的区别
-
-```
-传统脚本：采集 → 输出原始数据 → 人看
-本项目：  采集 → AI分析 → 自动修复 → 通知人 → 生成可读报告
-```
+完整状态机、API 和交付顺序见 `design/ops-agent-domain.md`。

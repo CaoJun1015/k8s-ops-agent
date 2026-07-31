@@ -1,180 +1,103 @@
 # K8s Ops Agent
 
-基于 Kubernetes 的智能运维 Agent，从传统脚本巡检进化到 AI 辅助运维。
+一个以 Incident 为中心的 Kubernetes 运维工作台，支持告警聚合、行动项协作、
+只诊断 AgentRun、受控 Pod 修复、人工审批、结果验证和追加式审计。
 
-## 项目简介
+## 业务闭环
 
-一个完整的 K8s 运维自动化工具集，覆盖日常巡检、日志分析、故障自愈、告警通知等场景。支持接入 LLM（OpenAI/Claude）实现 AI 日志分析和根因定位。
-
-## 架构
-
-```
-传统运维：手动执行命令 → 人眼看结果 → 人处理
-本项目：  Agent自动采集 → AI分析根因 → 自动修复 → 通知人
-```
-
-```
-┌─────────────────────────────────────────────┐
-│              K8s Ops Agent                   │
-├─────────────────────────────────────────────┤
-│  ops/                                       │
-│  ├── daily-inspection.sh  ← 日常巡检        │
-│  ├── log-analyzer.sh      ← 日志分析        │
-│  ├── auto-fix.sh          ← 故障自愈        │
-│  └── alert.sh             ← 告警通知        │
-│                                             │
-│  agent/                                     │
-│  ├── analyze.sh           ← AI日志分析      │
-│  └── report.sh            ← 自然语言报告    │
-│                                             │
-│  config/                                    │
-│  └── threshold.conf       ← 阈值配置        │
-│                                             │
-│  docs/                                      │
-│  ├── architecture.md      ← 架构说明        │
-│  └── troubleshooting.md   ← 排查手册        │
-└─────────────────────────────────────────────┘
+```text
+Prometheus Alert
+  → Incident
+  → AgentRun（采集与诊断）
+  → Plan（固定 Action Catalog）
+  → dry-run / 策略检查
+  → 人工审批或低风险自动策略
+  → Execution
+  → 恢复验证
+  → RESOLVED / 人工 Action Task
 ```
 
-## 技术栈
+原 Todo 应用已迁移到 `examples/demo-app/`，只作为 CrashLoopBackOff、5xx 和
+依赖故障等端到端演练靶场。
 
-| 层 | 技术 | 说明 |
-|----|------|------|
-| 应用 | Python Flask + Redis | 待办事项Web应用 |
-| 容器 | Docker（多阶段构建） | 应用打包，镜像体积优化 |
-| 编排 | Kubernetes | 生产级部署，含健康探针 |
-| 代理 | Nginx | 反向代理，gzip压缩 |
-| 运维 | Shell脚本 | 巡检/分析/自愈/告警 |
-| AI | OpenAI / Claude | 日志分析、根因定位 |
-| CI/CD | Jenkins / GitLab CI | 自动化测试、构建、部署 |
-| 监控 | Prometheus + Grafana | 指标采集、告警规则、可视化面板 |
-| 方法论 | TDD + 工程化实践 | 参见 docs/ |
+## 组件
 
-## 快速开始
+| 组件 | 职责 |
+|---|---|
+| Flask API / Ops Console | Incident、Task、Plan、Execution、Audit API |
+| PostgreSQL | 长期业务事实与审计记录 |
+| Redis + RQ | 后台诊断、执行队列与短期协调 |
+| Agent Worker | 只诊断 AgentRun 和已批准的修复执行 |
+| Kubernetes Adapter | 结构化读取与白名单 Pod 重建 |
+| kube-prometheus-stack | Prometheus、Alertmanager、Grafana、集群指标 |
+| Redis exporter | 提供真实 `redis_up` 等指标 |
 
-### 1. 部署应用
+自动修复默认关闭。即使开启，也只允许重建白名单命名空间中、由 Deployment 或
+StatefulSet 管理、且当前确认异常的 Pod。
+
+## 本地运行
 
 ```bash
-# 使用kubectl部署
-kubectl apply -f k8s/
+docker compose -f docker/docker-compose.yml up --build
 ```
 
-### 2. 运行巡检
+Compose 会启动 PostgreSQL、Redis、数据库迁移、Ops Agent API、RQ Worker 和
+Nginx。访问 `http://localhost`。
+
+## Kubernetes 部署
+
+先修改 `k8s/secret.yaml` 中的数据库密码、Alert Webhook Token 和 Operator
+Token，并同步修改监控 Helm values 中的 Alert Webhook Token，再构建并推送
+`ops-agent` 镜像。审批、拒绝和执行接口在生产配置下要求
+`Authorization: Bearer <OPERATOR_API_TOKEN>`。
 
 ```bash
-# 日常巡检
-bash ops/daily-inspection.sh
+kubectl apply -f k8s/secret.yaml
+kubectl apply -f k8s/configmap.yaml
+kubectl apply -f k8s/postgres.yaml
+kubectl apply -f k8s/redis-deployment.yaml
+kubectl apply -f k8s/redis-service.yaml
+kubectl apply -f k8s/rbac.yaml
 
-# 日志分析
-bash ops/log-analyzer.sh todo-app default
+kubectl apply -f k8s/migration-job.yaml
+kubectl wait --for=condition=complete job/ops-agent-db-migrate --timeout=180s
 
-# 故障自愈
-bash ops/auto-fix.sh
-
-# AI分析（需要配置API密钥）
-export OPENAI_API_KEY=your-key
-bash agent/analyze.sh todo-app default
+kubectl apply -f k8s/app-deployment.yaml
+kubectl apply -f k8s/worker-deployment.yaml
+kubectl apply -f k8s/app-service.yaml
 ```
 
-### 3. 配置告警
-
-编辑 `config/threshold.conf`：
-
-```ini
-[notification]
-webhook_url="https://open.feishu.cn/your-webhook"
-alert_level="warn"
-```
-
-### 4. 定时执行
+安装真实监控链路：
 
 ```bash
-# 每天早上8点巡检
-crontab -e
-0 8 * * * /path/to/ops/daily-inspection.sh
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo update
+helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+  --namespace monitoring --create-namespace \
+  -f monitoring/kube-prometheus-stack-values.yaml
 
-# 每5分钟自愈检查
-*/5 * * * * /path/to/ops/auto-fix.sh
+kubectl apply -f monitoring/service-monitors.yaml
+kubectl apply -f monitoring/prometheus-alert-rules.yaml
+kubectl apply -f monitoring/grafana-dashboards.yaml
 ```
 
-## CI/CD 流水线
-
-项目内置 Jenkins 和 GitLab CI 两种流水线配置：
+## 故障演练
 
 ```bash
-# Jenkins
-# 在 Jenkins 中新建 Pipeline 任务，选择 "Pipeline script from SCM"
-# Jenkinsfile 路径：ci/Jenkinsfile
-
-# GitLab CI
-# 推送到 main/develop 分支自动触发
-# 配置见 ci/gitlab-ci.yml
+docker build -t demo-todo:v1 examples/demo-app
+kubectl apply -f examples/demo-app/k8s/demo-app.yaml
+kubectl apply -f examples/demo-app/k8s/scenario-crashloop.yaml
 ```
 
-流水线流程：代码提交 → 单元测试 → 多阶段构建 Docker 镜像 → 推送 Harbor → kubectl set image 滚动更新
+保持 `AUTO_REMEDIATE_ENABLED=false` 可演练人工审批；只有完成 dry-run、审批和验证
+测试后，才应在限定环境把它改为 `true`。
 
-分支策略：
-- `develop` → 自动部署 dev 环境
-- `main` → 自动部署 staging 环境
-- `prod` → Jenkins 参数手动触发部署
-
-## 监控体系
-
-基于 Prometheus + Grafana 的监控告警：
+## 测试
 
 ```bash
-# 部署监控组件
-kubectl apply -f monitoring/
+python -m pytest app/tests -q
+python -m pytest examples/demo-app/tests -q
 ```
 
-告警规则覆盖：
-- Pod 重启频繁
-- CPU 使用率过高（>80%）
-- 内存使用率过高（>85%）
-- Pod 未就绪超时
-- 5xx 错误率过高
-- Redis 不可用
-
-Grafana 面板：Pod 状态分布、CPU/内存 Top 5、重启次数趋势
-
-## 健康检查
-
-Flask 应用提供 `/health` 端点，返回应用状态 + K8s 环境信息：
-
-```json
-{
-  "status": "ok",
-  "redis": "connected",
-  "pod": "todo-app-xxx",
-  "node": "node-1"
-}
-```
-
-K8s Deployment 配置了 readinessProbe（initialDelaySeconds=5）和 livenessProbe（initialDelaySeconds=15），实现故障自动恢复。
-
-## 巡检覆盖项
-
-| 检查项 | 说明 |
-|--------|------|
-| 节点状态 | NotReady检测 |
-| 异常Pod | CrashLoopBackOff / ImagePullBackOff |
-| 高重启Pod | 重启次数超过阈值 |
-| 资源使用 | CPU/内存Top排行 |
-| 应用健康 | Service/Deployment状态 |
-| Warning事件 | 最近集群告警事件 |
-| 日志分析 | ERROR/WARN统计、关键词提取 |
-| AI根因分析 | LLM分析日志给出修复建议 |
-| 故障自愈 | 自动重启异常Pod、清理垃圾 |
-| 告警通知 | 飞书/钉钉/企业微信 |
-
-## 项目文档
-
-- [架构说明](docs/architecture.md)
-- [故障排查手册](docs/troubleshooting.md)
-- [工程化方法论](docs/engineering-practice.md)
-- [CI/CD 配置说明](ci/README.md)
-- [监控体系说明](monitoring/README.md)
-
-## License
-
-MIT
+领域与演进规范见 `docs/design/ops-agent-domain.md`，监控说明见
+`monitoring/README.md`。

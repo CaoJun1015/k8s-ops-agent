@@ -1,0 +1,22 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ops-agent-db-migrate
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app: ops-agent-db-migrate
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: migrate
+          image: ops-agent:v1
+          imagePullPolicy: IfNotPresent
+          command: [alembic, -c, alembic.ini, upgrade, head]
+          envFrom:
+            - configMapRef:
+                name: ops-agent-config
+            - secretRef:
+                name: ops-agent-secret

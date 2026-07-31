@@ -1,30 +1,19 @@
-# CI/CD 配置说明
+# CI/CD 流水线
 
-## 文件列表
+两条流水线都执行主应用与 Demo 测试、构建并推送镜像、运行 Alembic Job，然后滚动
+更新 API 和 Worker。数据库迁移失败时不会开始 Deployment rollout。
 
-| 文件 | 用途 | 适用平台 |
-|------|------|----------|
-| [Jenkinsfile](Jenkinsfile) | Jenkins Pipeline 流水线 | Jenkins |
-| [gitlab-ci.yml](gitlab-ci.yml) | GitLab CI/CD 配置 | GitLab |
+## Jenkins
 
-## 流程说明
+- 配置凭据 `docker-registry-credentials`。
+- 参数 `DOCKER_REGISTRY` 是仓库主机，`DOCKER_IMAGE` 是镜像仓库名。
+- Jenkins Agent 需要 Python、Docker、kubectl 和目标集群凭据。
 
-```
-代码提交 → 单元测试 → 构建镜像 → 部署到 K8s
-```
+## GitLab CI
 
-## Jenkins 使用
+需要变量：
 
-1. 在 Jenkins 中新建 Pipeline 任务
-2. 选择 "Pipeline script from SCM"
-3. 配置 Git 仓库地址和分支
-4. Jenkinsfile 路径设为 `ci/Jenkinsfile`
+- `CI_REGISTRY_USER`、`CI_REGISTRY_PASSWORD`、`CI_REGISTRY_IMAGE`
+- `KUBE_CONTEXT`
 
-## GitLab CI 使用
-
-1. 确保仓库已配置 GitLab Runner
-2. 设置 CI/CD Variables：
-   - `CI_REGISTRY_USER` / `CI_REGISTRY_PASSWORD`：镜像仓库认证
-   - `CI_REGISTRY_IMAGE`：镜像仓库地址
-   - `KUBE_CONTEXT`：K8s 集群上下文
-3. 推送到 main/master 分支自动触发
+`deploy` 为手动 Job，只允许 main/master 分支触发。

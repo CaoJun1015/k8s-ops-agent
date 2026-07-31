@@ -1,7 +1,12 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: todo-config
+  name: ops-agent-config
 data:
-  REDIS_HOST: redis-svc
-  REDIS_PORT: "6379"
+  REDIS_URL: redis://redis-svc:6379/0
+  QUEUE_MODE: rq
+  EXECUTION_MODE: rq
+  DIAGNOSIS_PROVIDER: deterministic
+  AUTO_REMEDIATE_ENABLED: "false"
+  ALLOWED_NAMESPACES: default
+  REQUIRE_OPERATOR_AUTH: "true"

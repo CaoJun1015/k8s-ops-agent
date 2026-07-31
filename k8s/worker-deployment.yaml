@@ -1,0 +1,53 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ops-agent-worker
+  labels:
+    app: ops-agent-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ops-agent-worker
+  template:
+    metadata:
+      labels:
+        app: ops-agent-worker
+    spec:
+      serviceAccountName: ops-agent-worker
+      securityContext:
+        runAsNonRoot: true
+      containers:
+        - name: worker
+          image: ops-agent:v1
+          imagePullPolicy: IfNotPresent
+          command:
+            - rq
+            - worker
+            - --url
+            - redis://redis-svc:6379/0
+            - agent-runs
+            - executions
+          envFrom:
+            - configMapRef:
+                name: ops-agent-config
+            - secretRef:
+                name: ops-agent-secret
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

@@ -6,17 +6,17 @@ metadata:
   labels:
     grafana_dashboard: "1"
 data:
-  todo-app-dashboard.json: |
+  ops-agent-dashboard.json: |
     {
-      "title": "Todo App 监控面板",
-      "uid": "todo-app",
+      "title": "K8s Ops Agent 监控面板",
+      "uid": "ops-agent",
       "panels": [
         {
           "title": "Pod 状态",
           "type": "stat",
           "targets": [
             {
-              "expr": "count(kube_pod_status_ready{namespace=\"default\",pod=~\"todo-app-.*\",condition=\"true\"} == 1)"
+              "expr": "count(kube_pod_status_ready{namespace=\"default\",pod=~\"ops-agent-.*\",condition=\"true\"} == 1)"
             }
           ],
           "fieldConfig": {
@@ -25,7 +25,7 @@ data:
                 "mode": "absolute",
                 "steps": [
                   { "color": "red", "value": null },
-                  { "color": "green", "value": 3 }
+                  { "color": "green", "value": 1 }
                 ]
               }
             }
@@ -36,7 +36,7 @@ data:
           "type": "timeseries",
           "targets": [
             {
-              "expr": "avg(rate(container_cpu_usage_seconds_total{namespace=\"default\",pod=~\"todo-app-.*\"}[5m])) by (pod) * 100"
+              "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"default\",pod=~\"ops-agent-.*\",container!=\"\"}[5m])) by (pod)"
             }
           ]
         },
@@ -45,7 +45,7 @@ data:
           "type": "timeseries",
           "targets": [
             {
-              "expr": "avg(container_memory_usage_bytes{namespace=\"default\",pod=~\"todo-app-.*\"}) by (pod) / avg(container_spec_memory_limit_bytes{namespace=\"default\",pod=~\"todo-app-.*\"}) by (pod) * 100"
+              "expr": "sum(container_memory_working_set_bytes{namespace=\"default\",pod=~\"ops-agent-.*\",container!=\"\"}) by (pod)"
             }
           ]
         },
@@ -54,7 +54,7 @@ data:
           "type": "timeseries",
           "targets": [
             {
-              "expr": "rate(http_requests_total{namespace=\"default\"}[5m])"
+              "expr": "sum(rate(ops_agent_http_requests_total[5m])) by (status)"
             }
           ]
         },
@@ -72,7 +72,7 @@ data:
           "type": "stat",
           "targets": [
             {
-              "expr": "sum(kube_pod_container_status_restarts_total{namespace=\"default\",pod=~\"todo-app-.*\"})"
+              "expr": "sum(kube_pod_container_status_restarts_total{namespace=\"default\",pod=~\"ops-agent-.*\"})"
             }
           ]
         }

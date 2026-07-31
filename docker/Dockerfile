@@ -14,10 +14,9 @@ FROM python:3.11-slim AS runner
 RUN useradd --create-home --shell /bin/bash appuser
 WORKDIR /app
 COPY --from=builder /root/.local /home/appuser/.local
-COPY app/app.py .
-COPY app/templates/ templates/
+COPY app/ .
 ENV PATH=/home/appuser/.local/bin:$PATH
 ENV FLASK_DEBUG=False
 USER appuser
 EXPOSE 5000
-CMD ["python", "app.py"]
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "2", "app:app"]
