@@ -25,3 +25,7 @@ reports/*.log
 
 # Environment
 .env
+
+# Personal documents (not for repository)
+项目介绍与优化建议.md
+PRD-enhancement.md
