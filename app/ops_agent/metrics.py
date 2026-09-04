@@ -1,9 +1,23 @@
 """Prometheus metrics owned by the Ops Agent process."""
 
-from prometheus_client import Counter, Gauge, Histogram, Info
+import os
 
-APP_INFO = Info("ops_agent", "K8s Ops Agent build information")
-APP_INFO.info({"version": "0.1.0"})
+from prometheus_client import (
+    CollectorRegistry,
+    Counter,
+    Gauge,
+    Histogram,
+    generate_latest,
+    multiprocess,
+)
+
+APP_INFO = Gauge(
+    "ops_agent_info",
+    "K8s Ops Agent build information",
+    ("version",),
+    multiprocess_mode="max",
+)
+APP_INFO.labels("0.2.0").set(1)
 
 HTTP_REQUESTS = Counter(
     "ops_agent_http_requests_total",
@@ -33,12 +47,24 @@ REMEDIATION_EXECUTIONS = Counter(
 OPEN_INCIDENTS = Gauge(
     "ops_agent_open_incidents",
     "Current incidents not resolved or closed",
+    multiprocess_mode="mostrecent",
 )
 RECENT_FAILED_RUNS = Gauge(
     "ops_agent_recent_failed_runs",
     "Agent runs failed in the last ten minutes",
+    multiprocess_mode="mostrecent",
 )
 RECENT_FAILED_EXECUTIONS = Gauge(
     "ops_agent_recent_failed_executions",
     "Remediation executions failed verification in the last ten minutes",
+    multiprocess_mode="mostrecent",
 )
+
+
+def render_metrics() -> bytes:
+    """Render the default registry or aggregate Gunicorn worker files."""
+    if os.environ.get("PROMETHEUS_MULTIPROC_DIR"):
+        registry = CollectorRegistry()
+        multiprocess.MultiProcessCollector(registry)
+        return generate_latest(registry)
+    return generate_latest()

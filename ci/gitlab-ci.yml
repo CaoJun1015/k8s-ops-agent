@@ -56,8 +56,10 @@ deploy:
     - kubectl wait --for=condition=complete job/ops-agent-db-migrate -n default --timeout=180s
     - kubectl set image deployment/ops-agent ops-agent=$CI_REGISTRY_IMAGE:$DOCKER_TAG -n default
     - kubectl set image deployment/ops-agent-worker worker=$CI_REGISTRY_IMAGE:$DOCKER_TAG -n default
+    - kubectl set image deployment/ops-agent-dispatcher dispatcher=$CI_REGISTRY_IMAGE:$DOCKER_TAG -n default
     - kubectl rollout status deployment/ops-agent -n default --timeout=120s
     - kubectl rollout status deployment/ops-agent-worker -n default --timeout=120s
+    - kubectl rollout status deployment/ops-agent-dispatcher -n default --timeout=120s
   only:
     - main
     - master

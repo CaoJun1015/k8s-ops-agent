@@ -16,6 +16,8 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -23,9 +25,11 @@ from ops_agent.database import Base
 from ops_agent.domain import (
     AgentRunMode,
     AgentRunStatus,
+    EvidenceType,
     ExecutionStatus,
     IncidentSeverity,
     IncidentStatus,
+    OutboxStatus,
     PlanStatus,
     Priority,
     RiskLevel,
@@ -63,6 +67,13 @@ class Incident(TimestampMixin, Base):
     __tablename__ = "incidents"
     __table_args__ = (
         Index("ix_incident_fingerprint_status", "fingerprint", "status"),
+        Index(
+            "uq_active_incident_fingerprint",
+            "fingerprint",
+            unique=True,
+            postgresql_where=text("status NOT IN ('RESOLVED', 'CLOSED')"),
+            sqlite_where=text("status NOT IN ('RESOLVED', 'CLOSED')"),
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -80,6 +91,9 @@ class Incident(TimestampMixin, Base):
     resource_name: Mapped[str] = mapped_column(String(253), nullable=False)
     source: Mapped[str] = mapped_column(String(100), nullable=False)
     summary: Mapped[str | None] = mapped_column(Text)
+    source_context: Mapped[dict[str, Any]] = mapped_column(
+        JSON, default=dict, nullable=False
+    )
     first_seen_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
     )
@@ -87,7 +101,10 @@ class Incident(TimestampMixin, Base):
         DateTime(timezone=True), default=utc_now, nullable=False
     )
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    occurrence_count: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+
+    __mapper_args__ = {"version_id_col": version}
 
     tasks: Mapped[list[Task]] = relationship(
         back_populates="incident", cascade="all, delete-orphan"
@@ -96,6 +113,9 @@ class Incident(TimestampMixin, Base):
         back_populates="incident", cascade="all, delete-orphan"
     )
     agent_runs: Mapped[list[AgentRun]] = relationship(
+        back_populates="incident", cascade="all, delete-orphan"
+    )
+    evidence: Mapped[list[Evidence]] = relationship(
         back_populates="incident", cascade="all, delete-orphan"
     )
 
@@ -172,6 +192,44 @@ class AgentRun(TimestampMixin, Base):
 
     incident: Mapped[Incident] = relationship(back_populates="agent_runs")
     executions: Mapped[list[Execution]] = relationship(back_populates="agent_run")
+    evidence: Mapped[list[Evidence]] = relationship(
+        back_populates="agent_run", cascade="all, delete-orphan"
+    )
+
+
+class Evidence(Base):
+    __tablename__ = "evidence"
+    __table_args__ = (
+        UniqueConstraint(
+            "agent_run_id",
+            "evidence_type",
+            "content_hash",
+            name="uq_evidence_run_type_hash",
+        ),
+        Index("ix_evidence_incident_collected", "incident_id", "collected_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    incident_id: Mapped[str] = mapped_column(
+        ForeignKey("incidents.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    agent_run_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    evidence_type: Mapped[EvidenceType] = mapped_column(
+        Enum(EvidenceType, native_enum=False, length=32), nullable=False
+    )
+    source: Mapped[str] = mapped_column(String(50), nullable=False)
+    content: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    redacted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    collected_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    incident: Mapped[Incident] = relationship(back_populates="evidence")
+    agent_run: Mapped[AgentRun] = relationship(back_populates="evidence")
 
 
 class Execution(TimestampMixin, Base):
@@ -220,3 +278,25 @@ class AuditEvent(Base):
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
     )
+
+
+class OutboxEvent(TimestampMixin, Base):
+    __tablename__ = "outbox_events"
+    __table_args__ = (
+        Index("ix_outbox_delivery", "status", "available_at", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    topic: Mapped[str] = mapped_column(String(100), nullable=False)
+    aggregate_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    aggregate_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    status: Mapped[OutboxStatus] = enum_column(
+        OutboxStatus, OutboxStatus.PENDING
+    )
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    available_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(Text)

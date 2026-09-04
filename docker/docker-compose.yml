@@ -7,7 +7,7 @@ services:
     environment:
       POSTGRES_DB: ops_agent
       POSTGRES_USER: ops_agent
-      POSTGRES_PASSWORD: ops_agent
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ops_agent -d ops_agent"]
       interval: 5s
@@ -33,15 +33,15 @@ services:
       dockerfile: docker/Dockerfile
     command: ["alembic", "-c", "alembic.ini", "upgrade", "head"]
     environment: &ops-agent-env
-      DATABASE_URL: postgresql+psycopg://ops_agent:ops_agent@postgres:5432/ops_agent
+      DATABASE_URL: "postgresql+psycopg://ops_agent:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/ops_agent"
       REDIS_URL: redis://redis:6379/0
       QUEUE_MODE: rq
       EXECUTION_MODE: rq
       AUTO_REMEDIATE_ENABLED: "false"
       ALLOWED_NAMESPACES: default
       REQUIRE_OPERATOR_AUTH: "true"
-      OPERATOR_API_TOKEN: change-me-operator-token
-      ALERT_WEBHOOK_TOKEN: change-me-alert-token
+      OPERATOR_API_TOKEN: "${OPERATOR_API_TOKEN:?Set OPERATOR_API_TOKEN in .env}"
+      ALERT_WEBHOOK_TOKEN: "${ALERT_WEBHOOK_TOKEN:?Set ALERT_WEBHOOK_TOKEN in .env}"
     depends_on:
       postgres:
         condition: service_healthy
@@ -63,6 +63,19 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
     command: ["rq", "worker", "--url", "redis://redis:6379/0", "agent-runs", "executions"]
+    restart: always
+    environment: *ops-agent-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  dispatcher:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    command: ["python", "-m", "ops_agent.outbox"]
     restart: always
     environment: *ops-agent-env
     depends_on:

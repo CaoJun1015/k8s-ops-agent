@@ -88,27 +88,54 @@ class AgentRunMode(StrEnum):
     DIAGNOSE_ONLY = "DIAGNOSE_ONLY"
 
 
+class EvidenceType(StrEnum):
+    ALERT_PAYLOAD = "ALERT_PAYLOAD"
+    POD_STATUS = "POD_STATUS"
+    CURRENT_LOGS = "CURRENT_LOGS"
+    PREVIOUS_LOGS = "PREVIOUS_LOGS"
+    K8S_EVENTS = "K8S_EVENTS"
+    WORKLOAD_STATUS = "WORKLOAD_STATUS"
+    RESOURCE_LIMITS = "RESOURCE_LIMITS"
+    PROMETHEUS_METRICS = "PROMETHEUS_METRICS"
+    REDIS_STATUS = "REDIS_STATUS"
+    COLLECTION_ERROR = "COLLECTION_ERROR"
+
+
+class OutboxStatus(StrEnum):
+    PENDING = "PENDING"
+    PUBLISHED = "PUBLISHED"
+    FAILED = "FAILED"
+
+
 TRANSITIONS = {
     IncidentStatus: {
-        IncidentStatus.OPEN: {IncidentStatus.DIAGNOSING, IncidentStatus.CLOSED},
+        IncidentStatus.OPEN: {
+            IncidentStatus.DIAGNOSING,
+            IncidentStatus.VERIFYING,
+            IncidentStatus.CLOSED,
+        },
         IncidentStatus.DIAGNOSING: {
             IncidentStatus.DIAGNOSED,
             IncidentStatus.FAILED,
+            IncidentStatus.VERIFYING,
             IncidentStatus.CLOSED,
         },
         IncidentStatus.DIAGNOSED: {
             IncidentStatus.PLAN_READY,
             IncidentStatus.DIAGNOSING,
+            IncidentStatus.VERIFYING,
             IncidentStatus.CLOSED,
         },
         IncidentStatus.PLAN_READY: {
             IncidentStatus.AWAITING_APPROVAL,
             IncidentStatus.DIAGNOSED,
+            IncidentStatus.VERIFYING,
             IncidentStatus.CLOSED,
         },
         IncidentStatus.AWAITING_APPROVAL: {
             IncidentStatus.REMEDIATING,
             IncidentStatus.DIAGNOSED,
+            IncidentStatus.VERIFYING,
             IncidentStatus.CLOSED,
         },
         IncidentStatus.REMEDIATING: {
@@ -122,6 +149,7 @@ TRANSITIONS = {
         IncidentStatus.RESOLVED: {IncidentStatus.CLOSED},
         IncidentStatus.FAILED: {
             IncidentStatus.DIAGNOSING,
+            IncidentStatus.VERIFYING,
             IncidentStatus.CLOSED,
         },
         IncidentStatus.CLOSED: set(),
@@ -162,7 +190,10 @@ TRANSITIONS = {
         PlanStatus.CANCELLED: set(),
     },
     ExecutionStatus: {
-        ExecutionStatus.PREPARED: {ExecutionStatus.RUNNING},
+        ExecutionStatus.PREPARED: {
+            ExecutionStatus.RUNNING,
+            ExecutionStatus.FAILED,
+        },
         ExecutionStatus.RUNNING: {
             ExecutionStatus.SUCCEEDED,
             ExecutionStatus.FAILED,

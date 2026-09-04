@@ -14,10 +14,15 @@ class Database:
 
     def __init__(self, url: str):
         engine_options = {"pool_pre_ping": True}
+        if url.startswith("sqlite"):
+            engine_options["connect_args"] = {"timeout": 30}
         if url == "sqlite+pysqlite:///:memory:":
             engine_options.update(
                 {
-                    "connect_args": {"check_same_thread": False},
+                    "connect_args": {
+                        "check_same_thread": False,
+                        "timeout": 30,
+                    },
                     "poolclass": StaticPool,
                 }
             )
@@ -31,4 +36,3 @@ class Database:
         from ops_agent import models  # noqa: F401
 
         Base.metadata.create_all(self.engine)
-

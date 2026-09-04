@@ -8,11 +8,29 @@ from ops_agent.auto_remediation import attempt_auto_remediation
 from ops_agent.database import Database
 from ops_agent.services import OpsService
 from ops_agent.kubernetes_adapter import KubernetesAdapter
+from ops_agent.evidence import EvidenceCollector
+from ops_agent.diagnosis import build_diagnosis_pipeline
+from ops_agent.prometheus_adapter import PrometheusAdapter
 
 
 def process_diagnosis_job(database_url: str, run_id: str) -> None:
     database = Database(database_url)
-    service = OpsService(database.session_factory)
+    kubernetes_adapter = KubernetesAdapter()
+    prometheus_url = os.environ.get("PROMETHEUS_URL", "")
+    prometheus_adapter = (
+        PrometheusAdapter(prometheus_url) if prometheus_url else None
+    )
+    service = OpsService(
+        database.session_factory,
+        evidence_collector=EvidenceCollector(
+            kubernetes_adapter, prometheus_adapter
+        ),
+        diagnosis_engine=build_diagnosis_pipeline(
+            os.environ.get("DIAGNOSIS_PROVIDER", "rules"),
+            api_key=os.environ.get("OPENAI_API_KEY"),
+            model=os.environ.get("OPENAI_MODEL", "gpt-5.4-mini"),
+        ),
+    )
     try:
         run = service.process_diagnosis(run_id)
         if os.environ.get("AUTO_REMEDIATE_ENABLED", "false").lower() == "true":
@@ -20,7 +38,7 @@ def process_diagnosis_job(database_url: str, run_id: str) -> None:
             attempt_auto_remediation(
                 service=service,
                 incident_id=run.incident_id,
-                kubernetes_adapter=KubernetesAdapter(),
+                kubernetes_adapter=kubernetes_adapter,
                 allowed_namespaces={
                     item.strip()
                     for item in os.environ.get(
@@ -40,4 +58,8 @@ def process_diagnosis_job(database_url: str, run_id: str) -> None:
 def process_execution_job(database_url: str, execution_id: str) -> None:
     database = Database(database_url)
     service = OpsService(database.session_factory)
-    service.process_execution(execution_id, KubernetesAdapter())
+    try:
+        service.process_execution(execution_id, KubernetesAdapter())
+    except Exception as error:
+        service.fail_execution(execution_id, str(error))
+        raise

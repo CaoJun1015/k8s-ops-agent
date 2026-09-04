@@ -30,6 +30,9 @@ Plan、dry-run、策略判断、人工审批、Execution 和结果验证。最�
 `namespace`、`resource_kind`、`resource_name`、`source`、`summary`、
 `first_seen_at`、`last_seen_at`、`resolved_at`、`version`。
 
+`occurrence_count` 记录重复告警次数；`version` 只用于乐观锁。数据库对相同
+fingerprint 的活动 Incident 建部分唯一索引。
+
 状态机：
 
 ```text
@@ -99,6 +102,12 @@ QUEUED|COLLECTING|DIAGNOSING -> FAILED
 
 只追加的审计事件，记录实体、事件类型、操作者、结构化上下文和时间。所有状态转换、
 审批、执行、验证、回滚和自动策略决定都必须写入 Audit。
+
+### Evidence 与 Outbox
+
+Evidence 保存 AgentRun 采集到的脱敏、限长、只追加事实，诊断结果只能引用已持久化
+Evidence ID。Outbox 与 AgentRun/Execution 同事务创建，由独立 Dispatcher 使用稳定
+RQ job ID 投递，避免 API 提交成功后队列消息丢失。
 
 ## 4. API 约定
 

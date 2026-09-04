@@ -6,13 +6,13 @@ from datetime import datetime, timedelta, timezone
 
 import redis
 from flask import Flask, Response, g, jsonify, render_template, request
-from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+from prometheus_client import CONTENT_TYPE_LATEST
 from sqlalchemy import text
 
 from ops_agent.api import api
 from ops_agent.database import Database
 from ops_agent.services import OpsService
-from ops_agent.metrics import HTTP_DURATION, HTTP_REQUESTS
+from ops_agent.metrics import HTTP_DURATION, HTTP_REQUESTS, render_metrics
 from ops_agent.metrics import (
     OPEN_INCIDENTS,
     RECENT_FAILED_EXECUTIONS,
@@ -22,6 +22,10 @@ from ops_agent.domain import AgentRunStatus, ExecutionStatus, IncidentStatus
 from ops_agent.models import AgentRun, Execution, Incident
 from sqlalchemy import func, select
 from ops_agent.kubernetes_adapter import KubernetesAdapter
+from ops_agent.evidence import EvidenceCollector
+from ops_agent.diagnosis import build_diagnosis_pipeline
+from ops_agent.prometheus_adapter import PrometheusAdapter
+from ops_agent.verification import IncidentVerifier
 
 
 def create_app(overrides=None) -> Flask:
@@ -36,9 +40,10 @@ def create_app(overrides=None) -> Flask:
         EXECUTION_MODE=os.environ.get("EXECUTION_MODE", "rq"),
         CHECK_REDIS=True,
         AUTO_CREATE_SCHEMA=database_url.startswith("sqlite"),
-        DIAGNOSIS_PROVIDER=os.environ.get(
-            "DIAGNOSIS_PROVIDER", "deterministic"
-        ),
+        DIAGNOSIS_PROVIDER=os.environ.get("DIAGNOSIS_PROVIDER", "rules"),
+        OPENAI_API_KEY=os.environ.get("OPENAI_API_KEY", ""),
+        OPENAI_MODEL=os.environ.get("OPENAI_MODEL", "gpt-5.4-mini"),
+        PROMETHEUS_URL=os.environ.get("PROMETHEUS_URL", ""),
         AUTO_REMEDIATE_ENABLED=os.environ.get(
             "AUTO_REMEDIATE_ENABLED", "false"
         ).lower()
@@ -64,13 +69,34 @@ def create_app(overrides=None) -> Flask:
     if application.config["AUTO_CREATE_SCHEMA"]:
         database.create_schema()
     application.extensions["database"] = database
-    application.extensions["ops_service"] = OpsService(database.session_factory)
     application.extensions["redis"] = redis.from_url(
         application.config["REDIS_URL"], decode_responses=True
     )
     application.extensions["kubernetes_adapter"] = application.config.get(
         "KUBERNETES_ADAPTER"
     ) or KubernetesAdapter()
+    prometheus_adapter = application.config.get("PROMETHEUS_ADAPTER")
+    if prometheus_adapter is None and application.config["PROMETHEUS_URL"]:
+        prometheus_adapter = PrometheusAdapter(
+            application.config["PROMETHEUS_URL"]
+        )
+    application.extensions["prometheus_adapter"] = prometheus_adapter
+    application.extensions["incident_verifier"] = IncidentVerifier(
+        application.extensions["kubernetes_adapter"], prometheus_adapter
+    )
+    application.extensions["ops_service"] = OpsService(
+        database.session_factory,
+        evidence_collector=EvidenceCollector(
+            application.extensions["kubernetes_adapter"],
+            prometheus_adapter,
+        ),
+        diagnosis_engine=build_diagnosis_pipeline(
+            application.config["DIAGNOSIS_PROVIDER"],
+            api_key=application.config["OPENAI_API_KEY"],
+            model=application.config["OPENAI_MODEL"],
+            client=application.config.get("OPENAI_DIAGNOSIS_CLIENT"),
+        ),
+    )
     application.register_blueprint(api)
 
     @application.before_request
@@ -178,7 +204,7 @@ def create_app(overrides=None) -> Flask:
                 )
                 or 0
             )
-        return Response(generate_latest(), mimetype=CONTENT_TYPE_LATEST)
+        return Response(render_metrics(), mimetype=CONTENT_TYPE_LATEST)
 
     return application
 

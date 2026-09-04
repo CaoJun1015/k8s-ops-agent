@@ -6,7 +6,9 @@ data:
   REDIS_URL: redis://redis-svc:6379/0
   QUEUE_MODE: rq
   EXECUTION_MODE: rq
-  DIAGNOSIS_PROVIDER: deterministic
+  DIAGNOSIS_PROVIDER: rules
+  PROMETHEUS_URL: http://kube-prometheus-stack-prometheus.monitoring.svc:9090
+  OUTBOX_POLL_SECONDS: "1"
   AUTO_REMEDIATE_ENABLED: "false"
   ALLOWED_NAMESPACES: default
   REQUIRE_OPERATOR_AUTH: "true"

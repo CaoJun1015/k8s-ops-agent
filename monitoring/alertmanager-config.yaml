@@ -1,0 +1,25 @@
+apiVersion: monitoring.coreos.com/v1alpha1
+kind: AlertmanagerConfig
+metadata:
+  name: ops-agent
+  namespace: monitoring
+  labels:
+    alertmanagerConfig: ops-agent
+spec:
+  route:
+    receiver: ops-agent
+    groupBy: [alertname, cluster, namespace]
+    groupWait: 15s
+    groupInterval: 2m
+    repeatInterval: 4h
+  receivers:
+    - name: ops-agent
+      webhookConfigs:
+        - url: http://ops-agent-svc.default.svc.cluster.local:5000/api/alerts/prometheus
+          sendResolved: true
+          httpConfig:
+            authorization:
+              type: Bearer
+              credentials:
+                name: ops-agent-alertmanager
+                key: token

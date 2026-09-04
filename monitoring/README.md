@@ -9,6 +9,8 @@ kube-state-metrics、Ops Agent 指标和 Redis exporter。
 |------|------|
 | [namespace.yaml](namespace.yaml) | 创建 monitoring 命名空间 |
 | [kube-prometheus-stack-values.yaml](kube-prometheus-stack-values.yaml) | Helm values 与 Alertmanager 路由 |
+| [alertmanager-config.yaml](alertmanager-config.yaml) | 使用 Secret 引用的告警路由 |
+| [alertmanager-secret.example.yaml](alertmanager-secret.example.yaml) | Webhook Token 模板 |
 | [service-monitors.yaml](service-monitors.yaml) | Ops Agent/Redis exporter 抓取资源 |
 | [prometheus-alert-rules.yaml](prometheus-alert-rules.yaml) | Prometheus 告警规则（PrometheusRule） |
 | [grafana-dashboards.yaml](grafana-dashboards.yaml) | Grafana 仪表盘配置（ConfigMap） |
@@ -28,6 +30,10 @@ helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheu
 ### 2. 创建项目监控资源
 
 ```bash
+cp monitoring/alertmanager-secret.example.yaml monitoring/alertmanager-secret.yaml
+# 编辑 token，使其与 Ops Agent 的 ALERT_WEBHOOK_TOKEN 一致
+kubectl apply -f monitoring/alertmanager-secret.yaml
+kubectl apply -f monitoring/alertmanager-config.yaml
 kubectl apply -f monitoring/prometheus-alert-rules.yaml
 kubectl apply -f monitoring/service-monitors.yaml
 kubectl apply -f monitoring/grafana-dashboards.yaml

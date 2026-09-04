@@ -8,3 +8,4 @@ kubernetes>=30,<36
 rq>=2,<3
 alembic>=1.14,<2
 pytest>=8,<10
+openai>=1.68,<3

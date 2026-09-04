@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 
 from ops_agent.domain import (
     AgentRunMode,
@@ -24,12 +27,16 @@ from ops_agent.domain import (
 from ops_agent.models import (
     AgentRun,
     AuditEvent,
+    Evidence,
     Execution,
     Incident,
+    OutboxEvent,
     Plan,
     Task,
 )
 from ops_agent.metrics import AGENT_RUNS, REMEDIATION_EXECUTIONS
+from ops_agent.diagnosis import RuleDiagnosis
+from ops_agent.evidence import EvidenceCollector, sanitize_content
 
 
 class ValidationError(ValueError):
@@ -52,6 +59,11 @@ def enum_value(value):
     return value.value if hasattr(value, "value") else value
 
 
+def safe_error_message(error: Any, max_bytes: int = 2_000) -> str:
+    clean, _ = sanitize_content({"message": str(error)}, max_bytes=max_bytes)
+    return str(clean.get("message") or clean.get("data") or "operation failed")
+
+
 def serialize_incident(incident: Incident) -> dict[str, Any]:
     return {
         "id": incident.id,
@@ -70,6 +82,7 @@ def serialize_incident(incident: Incident) -> dict[str, Any]:
         "resolved_at": (
             incident.resolved_at.isoformat() if incident.resolved_at else None
         ),
+        "occurrence_count": incident.occurrence_count,
         "version": incident.version,
     }
 
@@ -105,6 +118,23 @@ def serialize_agent_run(run: AgentRun) -> dict[str, Any]:
         "started_at": run.started_at.isoformat() if run.started_at else None,
         "finished_at": run.finished_at.isoformat() if run.finished_at else None,
         "created_at": run.created_at.isoformat(),
+    }
+
+
+def serialize_evidence(evidence: Evidence) -> dict[str, Any]:
+    return {
+        "id": evidence.id,
+        "incident_id": evidence.incident_id,
+        "agent_run_id": evidence.agent_run_id,
+        "evidence_type": enum_value(evidence.evidence_type),
+        "source": evidence.source,
+        "content": evidence.content,
+        "content_hash": evidence.content_hash,
+        "redacted": evidence.redacted,
+        "collected_at": evidence.collected_at.isoformat(),
+        "expires_at": (
+            evidence.expires_at.isoformat() if evidence.expires_at else None
+        ),
     }
 
 
@@ -163,8 +193,16 @@ def serialize_audit(event: AuditEvent) -> dict[str, Any]:
 
 
 class OpsService:
-    def __init__(self, session_factory):
+    def __init__(
+        self,
+        session_factory,
+        *,
+        evidence_collector=None,
+        diagnosis_engine=None,
+    ):
         self.session_factory = session_factory
+        self.evidence_collector = evidence_collector or EvidenceCollector()
+        self.diagnosis_engine = diagnosis_engine or RuleDiagnosis()
 
     @staticmethod
     def _audit(
@@ -188,6 +226,23 @@ class OpsService:
             )
         )
 
+    @staticmethod
+    def _outbox(
+        session,
+        topic: str,
+        aggregate_type: str,
+        aggregate_id: str,
+        payload: dict[str, Any],
+    ) -> None:
+        session.add(
+            OutboxEvent(
+                topic=topic,
+                aggregate_type=aggregate_type,
+                aggregate_id=aggregate_id,
+                payload=payload,
+            )
+        )
+
     def create_incident(self, data: dict[str, Any]) -> tuple[Incident, bool]:
         required = (
             "title",
@@ -206,20 +261,42 @@ class OpsService:
         except ValueError as error:
             raise ValidationError("invalid severity") from error
 
-        with self.session_factory.begin() as session:
-            existing = session.scalar(
-                select(Incident)
-                .where(
-                    Incident.fingerprint == data["fingerprint"],
-                    Incident.status.notin_(
-                        [IncidentStatus.RESOLVED, IncidentStatus.CLOSED]
-                    ),
+        safe_fields, _ = sanitize_content(
+            {
+                "title": str(data["title"]).strip(),
+                "summary": data.get("summary"),
+            },
+            max_bytes=4_000,
+        )
+        if safe_fields.get("truncated"):
+            raise ValidationError("incident title or summary exceeds safe limit")
+        if len(safe_fields["title"]) > 200:
+            raise ValidationError("title exceeds max length of 200")
+
+        fingerprint = str(data["fingerprint"]).strip()
+
+        def observe_existing() -> Incident | None:
+            observed_at = utc_now()
+            with self.session_factory.begin() as session:
+                existing_id = session.scalar(
+                    update(Incident)
+                    .where(
+                        Incident.fingerprint == fingerprint,
+                        Incident.status.notin_(
+                            [IncidentStatus.RESOLVED, IncidentStatus.CLOSED]
+                        ),
+                    )
+                    .values(
+                        last_seen_at=observed_at,
+                        updated_at=observed_at,
+                        occurrence_count=Incident.occurrence_count + 1,
+                        version=Incident.version + 1,
+                    )
+                    .returning(Incident.id)
                 )
-                .order_by(Incident.created_at.desc())
-            )
-            if existing:
-                existing.last_seen_at = utc_now()
-                existing.version += 1
+                if not existing_id:
+                    return None
+                existing = session.get(Incident, existing_id)
                 self._audit(
                     session,
                     "Incident",
@@ -228,30 +305,45 @@ class OpsService:
                     actor_type="SYSTEM",
                     actor_id=data["source"],
                 )
-                return existing, False
+                return existing
 
-            incident = Incident(
-                title=str(data["title"]).strip(),
-                severity=severity,
-                fingerprint=str(data["fingerprint"]).strip(),
-                cluster=str(data.get("cluster") or "default").strip(),
-                namespace=str(data["namespace"]).strip(),
-                resource_kind=str(data["resource_kind"]).strip(),
-                resource_name=str(data["resource_name"]).strip(),
-                source=str(data["source"]).strip(),
-                summary=data.get("summary"),
-            )
-            session.add(incident)
-            session.flush()
-            self._audit(
-                session,
-                "Incident",
-                incident.id,
-                "incident.created",
-                actor_type="SYSTEM",
-                actor_id=incident.source,
-            )
-            return incident, True
+        existing = observe_existing()
+        if existing:
+            return existing, False
+
+        try:
+            with self.session_factory.begin() as session:
+                source_context, _ = sanitize_content(
+                    data.get("source_context") or {}
+                )
+                incident = Incident(
+                    title=safe_fields["title"],
+                    severity=severity,
+                    fingerprint=fingerprint,
+                    cluster=str(data.get("cluster") or "default").strip(),
+                    namespace=str(data["namespace"]).strip(),
+                    resource_kind=str(data["resource_kind"]).strip(),
+                    resource_name=str(data["resource_name"]).strip(),
+                    source=str(data["source"]).strip(),
+                    summary=safe_fields["summary"],
+                    source_context=source_context,
+                )
+                session.add(incident)
+                session.flush()
+                self._audit(
+                    session,
+                    "Incident",
+                    incident.id,
+                    "incident.created",
+                    actor_type="SYSTEM",
+                    actor_id=incident.source,
+                )
+                return incident, True
+        except IntegrityError:
+            existing = observe_existing()
+            if existing:
+                return existing, False
+            raise
 
     def list_incidents(self) -> list[Incident]:
         with self.session_factory() as session:
@@ -267,6 +359,130 @@ class OpsService:
             if not incident:
                 raise NotFoundError("incident not found")
             return incident
+
+    def resolve_incident_from_alert(
+        self,
+        fingerprint: str,
+        verifier,
+    ) -> tuple[Incident | None, str]:
+        """Verify an Alertmanager recovery before resolving its Incident."""
+        with self.session_factory.begin() as session:
+            incident = session.scalar(
+                select(Incident)
+                .where(
+                    Incident.fingerprint == fingerprint,
+                    Incident.status.notin_(
+                        [IncidentStatus.RESOLVED, IncidentStatus.CLOSED]
+                    ),
+                )
+                .order_by(Incident.created_at.desc())
+            )
+            if not incident:
+                return None, "ignored"
+            if incident.status != IncidentStatus.VERIFYING:
+                validate_transition(incident.status, IncidentStatus.VERIFYING)
+                previous = incident.status
+                incident.status = IncidentStatus.VERIFYING
+            else:
+                previous = IncidentStatus.VERIFYING
+            self._audit(
+                session,
+                "Incident",
+                incident.id,
+                "alert.resolved_received",
+                actor_type="SYSTEM",
+                actor_id="alertmanager",
+                payload={"from": previous.value, "fingerprint": fingerprint},
+            )
+
+        try:
+            verification = verifier.verify(incident)
+        except Exception as error:
+            verification = {
+                "healthy": False,
+                "checks": [],
+                "error_type": type(error).__name__,
+                "reason": "verification failed unexpectedly",
+            }
+
+        with self.session_factory.begin() as session:
+            incident = session.get(Incident, incident.id)
+            verification_task = session.scalar(
+                select(Task).where(
+                    Task.incident_id == incident.id,
+                    Task.task_type == TaskType.VERIFICATION,
+                    Task.related_entity_type == "Incident",
+                    Task.related_entity_id == incident.id,
+                    Task.status.in_(
+                        [TaskStatus.TODO, TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED]
+                    ),
+                )
+            )
+            if verification.get("healthy"):
+                validate_transition(incident.status, IncidentStatus.RESOLVED)
+                incident.status = IncidentStatus.RESOLVED
+                incident.resolved_at = utc_now()
+                outcome = "resolved"
+                event_type = "incident.recovery_verified"
+                if verification_task:
+                    if verification_task.status in {
+                        TaskStatus.TODO,
+                        TaskStatus.BLOCKED,
+                    }:
+                        validate_transition(
+                            verification_task.status, TaskStatus.IN_PROGRESS
+                        )
+                        verification_task.status = TaskStatus.IN_PROGRESS
+                    validate_transition(
+                        verification_task.status, TaskStatus.DONE
+                    )
+                    verification_task.status = TaskStatus.DONE
+                    self._audit(
+                        session,
+                        "Task",
+                        verification_task.id,
+                        "task.completed_by_verification",
+                        actor_type="AGENT",
+                        actor_id="recovery-verifier",
+                        payload={"incident_id": incident.id},
+                    )
+            else:
+                validate_transition(incident.status, IncidentStatus.FAILED)
+                incident.status = IncidentStatus.FAILED
+                outcome = "verification_failed"
+                event_type = "incident.recovery_verification_failed"
+                if not verification_task:
+                    task = Task(
+                        incident_id=incident.id,
+                        title="验证告警恢复状态",
+                        description="Alertmanager 已恢复，但资源或指标验证未通过。",
+                        task_type=TaskType.VERIFICATION,
+                        priority=Priority.HIGH,
+                        created_by="system",
+                        related_entity_type="Incident",
+                        related_entity_id=incident.id,
+                    )
+                    session.add(task)
+                    session.flush()
+                    self._audit(
+                        session,
+                        "Task",
+                        task.id,
+                        "task.created",
+                        actor_type="SYSTEM",
+                        actor_id="recovery-verifier",
+                        payload={"incident_id": incident.id},
+                    )
+            self._audit(
+                session,
+                "Incident",
+                incident.id,
+                event_type,
+                actor_type="AGENT",
+                actor_id="recovery-verifier",
+                payload={"verification": verification},
+            )
+            return incident, outcome
 
     def create_task(self, data: dict[str, Any]) -> Task:
         incident_id = str(data.get("incident_id", "")).strip()
@@ -343,41 +559,69 @@ class OpsService:
         incident_id: str,
         mode: str,
         idempotency_key: str | None,
+        *,
+        enqueue: bool = False,
     ) -> tuple[AgentRun, bool]:
         try:
             run_mode = AgentRunMode(mode)
         except ValueError as error:
             raise ValidationError("unsupported agent run mode") from error
 
-        with self.session_factory.begin() as session:
-            incident = session.get(Incident, incident_id)
-            if not incident:
-                raise NotFoundError("incident not found")
-            if idempotency_key:
+        def existing_run() -> AgentRun | None:
+            if not idempotency_key:
+                return None
+            with self.session_factory() as session:
                 existing = session.scalar(
                     select(AgentRun).where(
                         AgentRun.idempotency_key == idempotency_key
                     )
                 )
                 if existing:
-                    return existing, False
-            run = AgentRun(
-                incident_id=incident_id,
-                mode=run_mode,
-                idempotency_key=idempotency_key,
-            )
-            session.add(run)
-            session.flush()
-            self._audit(
-                session,
-                "AgentRun",
-                run.id,
-                "agent_run.created",
-                actor_type="SYSTEM",
-                actor_id="api",
-                payload={"mode": run_mode.value},
-            )
-            return run, True
+                    if existing.incident_id != incident_id:
+                        raise ValidationError(
+                            "Idempotency-Key belongs to another incident"
+                        )
+                    return existing
+                return None
+
+        existing = existing_run()
+        if existing:
+            return existing, False
+        try:
+            with self.session_factory.begin() as session:
+                incident = session.get(Incident, incident_id)
+                if not incident:
+                    raise NotFoundError("incident not found")
+                run = AgentRun(
+                    incident_id=incident_id,
+                    mode=run_mode,
+                    idempotency_key=idempotency_key,
+                )
+                session.add(run)
+                session.flush()
+                self._audit(
+                    session,
+                    "AgentRun",
+                    run.id,
+                    "agent_run.created",
+                    actor_type="SYSTEM",
+                    actor_id="api",
+                    payload={"mode": run_mode.value},
+                )
+                if enqueue:
+                    self._outbox(
+                        session,
+                        "agent_run.requested",
+                        "AgentRun",
+                        run.id,
+                        {"run_id": run.id},
+                    )
+                return run, True
+        except IntegrityError:
+            existing = existing_run()
+            if existing:
+                return existing, False
+            raise
 
     def process_diagnosis(self, run_id: str) -> AgentRun:
         with self.session_factory.begin() as session:
@@ -393,20 +637,40 @@ class OpsService:
                 validate_transition(incident.status, IncidentStatus.DIAGNOSING)
                 incident.status = IncidentStatus.DIAGNOSING
 
+        collected = self.evidence_collector.collect(incident)
+
+        with self.session_factory.begin() as session:
+            run = session.get(AgentRun, run_id)
+            if not run:
+                raise NotFoundError("agent run not found")
+            incident = session.get(Incident, run.incident_id)
             validate_transition(run.status, AgentRunStatus.DIAGNOSING)
             run.status = AgentRunStatus.DIAGNOSING
-            evidence = incident.summary or (
-                f"{incident.resource_kind}/{incident.resource_name} reported by "
-                f"{incident.source}"
+            persisted = []
+            for item in collected:
+                serialized = json.dumps(
+                    item.content,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                record = Evidence(
+                    incident_id=incident.id,
+                    agent_run_id=run.id,
+                    evidence_type=item.evidence_type,
+                    source=item.source,
+                    content=item.content,
+                    content_hash=hashlib.sha256(
+                        serialized.encode("utf-8")
+                    ).hexdigest(),
+                    redacted=item.redacted,
+                )
+                session.add(record)
+                persisted.append(record)
+            session.flush()
+            run.diagnosis = self.diagnosis_engine.diagnose(
+                incident, persisted
             )
-            run.diagnosis = {
-                "summary": f"诊断完成：{evidence}",
-                "severity": incident.severity.value,
-                "confidence": 0.5,
-                "evidence": [evidence],
-                "provider": "deterministic",
-                "recommended_action": "人工复核后创建修复计划",
-            }
 
             validate_transition(run.status, AgentRunStatus.COMPLETED)
             run.status = AgentRunStatus.COMPLETED
@@ -433,6 +697,29 @@ class OpsService:
                 raise NotFoundError("agent run not found")
             return run
 
+    def list_agent_runs(self, incident_id: str | None = None) -> list[AgentRun]:
+        with self.session_factory() as session:
+            statement = select(AgentRun)
+            if incident_id:
+                statement = statement.where(AgentRun.incident_id == incident_id)
+            return list(
+                session.scalars(
+                    statement.order_by(AgentRun.created_at.desc())
+                ).all()
+            )
+
+    def list_evidence(self, run_id: str) -> list[Evidence]:
+        with self.session_factory() as session:
+            if not session.get(AgentRun, run_id):
+                raise NotFoundError("agent run not found")
+            return list(
+                session.scalars(
+                    select(Evidence)
+                    .where(Evidence.agent_run_id == run_id)
+                    .order_by(Evidence.collected_at, Evidence.id)
+                ).all()
+            )
+
     def fail_agent_run(self, run_id: str, error: str) -> AgentRun:
         with self.session_factory.begin() as session:
             run = session.get(AgentRun, run_id)
@@ -444,7 +731,7 @@ class OpsService:
             }:
                 validate_transition(run.status, AgentRunStatus.FAILED)
                 run.status = AgentRunStatus.FAILED
-            run.error = error[:2000]
+            run.error = safe_error_message(error)
             run.finished_at = utc_now()
             incident = session.get(Incident, run.incident_id)
             if incident.status == IncidentStatus.DIAGNOSING:
@@ -726,46 +1013,78 @@ class OpsService:
             return plan
 
     def create_execution(
-        self, plan_id: str, idempotency_key: str, requested_by: str
+        self,
+        plan_id: str,
+        idempotency_key: str,
+        requested_by: str,
+        *,
+        enqueue: bool = False,
     ) -> tuple[Execution, bool]:
         if not idempotency_key:
             raise ValidationError("Idempotency-Key is required")
-        with self.session_factory.begin() as session:
-            existing = session.scalar(
+
+        def existing_execution() -> Execution | None:
+            with self.session_factory() as session:
+                existing = session.scalar(
                 select(Execution).where(
                     Execution.idempotency_key == idempotency_key
                 )
             )
             if existing:
-                return existing, False
-            plan = session.get(Plan, plan_id)
-            if not plan:
-                raise NotFoundError("plan not found")
-            if plan.status != PlanStatus.EXECUTABLE:
-                raise InvalidStateTransition(
-                    "plan must be approved and executable"
+                if existing.plan_id != plan_id:
+                    raise ValidationError(
+                        "Idempotency-Key belongs to another plan"
+                    )
+                return existing
+            return None
+
+        existing = existing_execution()
+        if existing:
+            return existing, False
+        try:
+            with self.session_factory.begin() as session:
+                plan = session.get(Plan, plan_id)
+                if not plan:
+                    raise NotFoundError("plan not found")
+                if plan.status != PlanStatus.EXECUTABLE:
+                    raise InvalidStateTransition(
+                        "plan must be approved and executable"
+                    )
+                execution = Execution(
+                    plan_id=plan.id,
+                    status=ExecutionStatus.PREPARED,
+                    idempotency_key=idempotency_key,
+                    requested_by=requested_by,
+                    approved_by=requested_by,
+                    approved_at=utc_now(),
                 )
-            execution = Execution(
-                plan_id=plan.id,
-                status=ExecutionStatus.PREPARED,
-                idempotency_key=idempotency_key,
-                requested_by=requested_by,
-                approved_by=requested_by,
-                approved_at=utc_now(),
-            )
-            session.add(execution)
-            session.flush()
-            self._audit(
-                session,
-                "Execution",
-                execution.id,
-                "execution.created",
-                actor_id=requested_by,
-                payload={"plan_id": plan.id},
-            )
-            return execution, True
+                session.add(execution)
+                session.flush()
+                self._audit(
+                    session,
+                    "Execution",
+                    execution.id,
+                    "execution.created",
+                    actor_id=requested_by,
+                    payload={"plan_id": plan.id},
+                )
+                if enqueue:
+                    self._outbox(
+                        session,
+                        "execution.requested",
+                        "Execution",
+                        execution.id,
+                        {"execution_id": execution.id},
+                    )
+                return execution, True
+        except IntegrityError:
+            existing = existing_execution()
+            if existing:
+                return existing, False
+            raise
 
     def process_execution(self, execution_id: str, kubernetes_adapter) -> Execution:
+        """Execute and verify without holding a database transaction over I/O."""
         with self.session_factory.begin() as session:
             execution = session.get(Execution, execution_id)
             if not execution:
@@ -788,19 +1107,25 @@ class OpsService:
                 actor_type="AGENT",
                 actor_id="execution-worker",
             )
+            target = dict(plan.target)
+            action_type = plan.action_type
 
-            try:
-                execution.result = kubernetes_adapter.delete_pod(
-                    namespace=plan.target["namespace"],
-                    pod_name=plan.target["pod_name"],
-                    expected_uid=plan.target["pod_uid"],
-                )
-            except Exception as error:
+        try:
+            action_result = kubernetes_adapter.delete_pod(
+                namespace=target["namespace"],
+                pod_name=target["pod_name"],
+                expected_uid=target["pod_uid"],
+            )
+        except Exception as error:
+            with self.session_factory.begin() as session:
+                execution = session.get(Execution, execution_id)
+                plan = session.get(Plan, execution.plan_id)
+                incident = session.get(Incident, plan.incident_id)
                 validate_transition(
                     execution.status, ExecutionStatus.FAILED
                 )
                 execution.status = ExecutionStatus.FAILED
-                execution.error = str(error)[:2000]
+                execution.error = safe_error_message(error)
                 execution.finished_at = utc_now()
                 validate_transition(incident.status, IncidentStatus.FAILED)
                 incident.status = IncidentStatus.FAILED
@@ -826,9 +1151,15 @@ class OpsService:
                     payload={"error": execution.error},
                 )
                 REMEDIATION_EXECUTIONS.labels(
-                    plan.action_type, "FAILED"
+                    action_type, "FAILED"
                 ).inc()
                 return execution
+
+        with self.session_factory.begin() as session:
+            execution = session.get(Execution, execution_id)
+            plan = session.get(Plan, execution.plan_id)
+            incident = session.get(Incident, plan.incident_id)
+            execution.result = action_result
             validate_transition(execution.status, ExecutionStatus.SUCCEEDED)
             execution.status = ExecutionStatus.SUCCEEDED
             execution.finished_at = utc_now()
@@ -846,7 +1177,20 @@ class OpsService:
                 payload=execution.result,
             )
 
-            verification = kubernetes_adapter.verify_recovery(plan.target)
+        try:
+            verification = kubernetes_adapter.verify_recovery(target)
+        except Exception as error:
+            verification = {
+                "healthy": False,
+                "reason": "verification raised an exception",
+                "error": safe_error_message(error),
+                "error_type": type(error).__name__,
+            }
+
+        with self.session_factory.begin() as session:
+            execution = session.get(Execution, execution_id)
+            plan = session.get(Plan, execution.plan_id)
+            incident = session.get(Incident, plan.incident_id)
             execution.verification_result = verification
             if verification.get("healthy"):
                 validate_transition(incident.status, IncidentStatus.RESOLVED)
@@ -862,7 +1206,7 @@ class OpsService:
                     payload=verification,
                 )
                 REMEDIATION_EXECUTIONS.labels(
-                    plan.action_type, "SUCCEEDED"
+                    action_type, "SUCCEEDED"
                 ).inc()
             else:
                 validate_transition(
@@ -882,9 +1226,80 @@ class OpsService:
                         related_entity_id=execution.id,
                     )
                 )
+                self._audit(
+                    session,
+                    "Execution",
+                    execution.id,
+                    "execution.verification_failed",
+                    actor_type="AGENT",
+                    actor_id="verification-worker",
+                    payload=verification,
+                )
                 REMEDIATION_EXECUTIONS.labels(
-                    plan.action_type, "VERIFICATION_FAILED"
+                    action_type, "VERIFICATION_FAILED"
                 ).inc()
+            return execution
+
+    def fail_execution(self, execution_id: str, error: str) -> Execution:
+        """Persist an unexpected worker failure without retrying the action."""
+        with self.session_factory.begin() as session:
+            execution = session.get(Execution, execution_id)
+            if not execution:
+                raise NotFoundError("execution not found")
+            if execution.status == ExecutionStatus.SUCCEEDED:
+                validate_transition(
+                    execution.status, ExecutionStatus.VERIFICATION_FAILED
+                )
+                execution.status = ExecutionStatus.VERIFICATION_FAILED
+            elif execution.status not in {
+                ExecutionStatus.FAILED,
+                ExecutionStatus.VERIFICATION_FAILED,
+                ExecutionStatus.ROLLED_BACK,
+            }:
+                validate_transition(execution.status, ExecutionStatus.FAILED)
+                execution.status = ExecutionStatus.FAILED
+            execution.error = safe_error_message(error)
+            execution.finished_at = utc_now()
+            plan = session.get(Plan, execution.plan_id)
+            incident = session.get(Incident, plan.incident_id) if plan else None
+            if incident and incident.status in {
+                IncidentStatus.REMEDIATING,
+                IncidentStatus.VERIFYING,
+            }:
+                incident.status = IncidentStatus.FAILED
+            existing_task = session.scalar(
+                select(Task).where(
+                    Task.related_entity_type == "Execution",
+                    Task.related_entity_id == execution.id,
+                    Task.status.in_(
+                        [TaskStatus.TODO, TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED]
+                    ),
+                )
+            )
+            if incident and not existing_task:
+                session.add(
+                    Task(
+                        incident_id=incident.id,
+                        title="人工确认异常执行结果",
+                        description=(
+                            "Worker 异常退出，系统不会自动重试集群变更。"
+                        ),
+                        task_type=TaskType.VERIFICATION,
+                        priority=Priority.CRITICAL,
+                        created_by="execution-worker",
+                        related_entity_type="Execution",
+                        related_entity_id=execution.id,
+                    )
+                )
+            self._audit(
+                session,
+                "Execution",
+                execution.id,
+                "execution.worker_failed",
+                actor_type="AGENT",
+                actor_id="execution-worker",
+                payload={"error": execution.error},
+            )
             return execution
 
     def get_plan(self, plan_id: str) -> Plan:

@@ -77,3 +77,16 @@ def test_non_diagnostic_agent_mode_is_rejected(client):
     )
     assert response.status_code == 400
     assert response.get_json()["error"]["code"] == "unsupported_mode"
+
+
+def test_agent_runs_can_be_listed_by_incident(client):
+    """控制台应能按 Incident 获取诊断历史并继续读取 Evidence。"""
+    incident = create_incident(client)
+    accepted = client.post(f"/api/incidents/{incident['id']}/agent-runs")
+
+    response = client.get(f"/api/agent-runs?incident_id={incident['id']}")
+
+    assert response.status_code == 200
+    runs = response.get_json()
+    assert [item["id"] for item in runs] == [accepted.get_json()["id"]]
+    assert runs[0]["diagnosis"]["evidence_ids"]
