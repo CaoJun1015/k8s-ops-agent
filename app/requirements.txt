@@ -9,3 +9,4 @@ rq>=2,<3
 alembic>=1.14,<2
 pytest>=8,<10
 openai>=1.68,<3
+jsonschema>=4.23,<5

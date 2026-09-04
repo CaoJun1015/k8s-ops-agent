@@ -18,7 +18,7 @@ def enqueue_diagnosis(
         database_url,
         run_id,
         job_id=job_id or f"agent-run:{run_id}",
-        job_timeout=120,
+        job_timeout=330,
         result_ttl=86400,
     )
 

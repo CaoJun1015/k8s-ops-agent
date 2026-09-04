@@ -1,32 +1,27 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: ops-agent-worker
+  name: ops-agent-execution-worker
   labels:
-    app: ops-agent-worker
+    app: ops-agent-execution-worker
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: ops-agent-worker
+      app: ops-agent-execution-worker
   template:
     metadata:
       labels:
-        app: ops-agent-worker
+        app: ops-agent-execution-worker
     spec:
-      serviceAccountName: ops-agent-agent
+      serviceAccountName: ops-agent-executor
       securityContext:
         runAsNonRoot: true
       containers:
         - name: worker
           image: ops-agent:v1
           imagePullPolicy: IfNotPresent
-          command:
-            - rq
-            - worker
-            - --url
-            - redis://redis-svc:6379/0
-            - agent-runs
+          command: [rq, worker, --url, redis://redis-svc:6379/0, executions]
           envFrom:
             - configMapRef:
                 name: ops-agent-config

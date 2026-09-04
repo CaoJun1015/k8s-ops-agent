@@ -22,6 +22,14 @@ def _label_value(value: str) -> str:
 
 
 class PrometheusAdapter:
+    QUERY_TEMPLATES = {
+        "pod_ready": 'kube_pod_status_ready{condition="true",namespace=%s,pod=%s}',
+        "pod_restarts": "kube_pod_container_status_restarts_total{namespace=%s,pod=%s}",
+        "pod_cpu_usage": "sum(rate(container_cpu_usage_seconds_total{namespace=%s,pod=%s}[5m]))",
+        "pod_memory_usage": "sum(container_memory_working_set_bytes{namespace=%s,pod=%s})",
+        "http_5xx_rate": 'sum(rate(http_requests_total{namespace=%s,status=~"5.."}[5m]))',
+        "redis_up": "redis_up",
+    }
     def __init__(
         self,
         base_url: str,
@@ -51,6 +59,29 @@ class PrometheusAdapter:
             "result_type": data.get("resultType"),
             "result": result[:100],
         }
+
+    def query_named(
+        self,
+        query_name: str,
+        *,
+        namespace: str,
+        resource_name: str,
+        timeout: float | None = None,
+    ) -> dict:
+        try:
+            template = self.QUERY_TEMPLATES[query_name]
+        except KeyError as error:
+            raise PrometheusQueryError("unknown named Prometheus query") from error
+        values = template.count("%s")
+        labels = (_label_value(namespace), _label_value(resource_name))[:values]
+        expression = template % labels if values else template
+        previous_timeout = self.timeout
+        try:
+            if timeout is not None:
+                self.timeout = min(previous_timeout, timeout)
+            return {"query_name": query_name, **self.query(expression)}
+        finally:
+            self.timeout = previous_timeout
 
     def collect_incident_metrics(self, incident) -> dict:
         queries = []

@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import selectinload
 
 from ops_agent.domain import (
     AgentRunMode,
@@ -26,6 +27,7 @@ from ops_agent.domain import (
 )
 from ops_agent.models import (
     AgentRun,
+    AgentStep,
     AuditEvent,
     Evidence,
     Execution,
@@ -33,6 +35,7 @@ from ops_agent.models import (
     OutboxEvent,
     Plan,
     Task,
+    ToolInvocation,
 )
 from ops_agent.metrics import AGENT_RUNS, REMEDIATION_EXECUTIONS
 from ops_agent.diagnosis import RuleDiagnosis
@@ -108,16 +111,95 @@ def serialize_task(task: Task) -> dict[str, Any]:
 
 
 def serialize_agent_run(run: AgentRun) -> dict[str, Any]:
+    total_tokens = run.input_tokens_used + run.output_tokens_used
     return {
         "id": run.id,
         "incident_id": run.incident_id,
         "mode": enum_value(run.mode),
         "status": enum_value(run.status),
         "diagnosis": run.diagnosis,
+        "goal": run.goal,
+        "autonomy_level": run.autonomy_level,
+        "target": run.target_snapshot,
+        "current_step": run.current_step,
+        "budget": {
+            "max_steps": run.max_steps,
+            "max_tool_calls": run.max_tool_calls,
+            "tool_calls_used": run.tool_calls_used,
+            "per_tool_timeout_seconds": run.per_tool_timeout_seconds,
+            "run_timeout_seconds": run.run_timeout_seconds,
+            "max_model_calls": run.max_model_calls,
+            "model_calls_used": run.model_calls_used,
+            "max_total_tokens": run.max_total_tokens,
+            "total_tokens_used": total_tokens,
+            "steps_remaining": max(0, run.max_steps - run.current_step),
+            "tool_calls_remaining": max(
+                0, run.max_tool_calls - run.tool_calls_used
+            ),
+            "model_calls_remaining": max(
+                0, run.max_model_calls - run.model_calls_used
+            ),
+            "tokens_remaining": max(0, run.max_total_tokens - total_tokens),
+        },
+        "deadline_at": run.deadline_at.isoformat() if run.deadline_at else None,
+        "stop_reason": run.stop_reason,
+        "model_name": run.model_name,
+        "prompt_version": run.prompt_version,
+        "cancel_requested_at": (
+            run.cancel_requested_at.isoformat()
+            if run.cancel_requested_at
+            else None
+        ),
+        "steps_url": f"/api/agent-runs/{run.id}/steps",
         "error": run.error,
         "started_at": run.started_at.isoformat() if run.started_at else None,
         "finished_at": run.finished_at.isoformat() if run.finished_at else None,
         "created_at": run.created_at.isoformat(),
+    }
+
+
+def serialize_tool_invocation(invocation: ToolInvocation) -> dict[str, Any]:
+    return {
+        "id": invocation.id,
+        "agent_step_id": invocation.agent_step_id,
+        "tool_name": invocation.tool_name,
+        "tool_version": invocation.tool_version,
+        "arguments": invocation.sanitized_arguments,
+        "status": enum_value(invocation.status),
+        "evidence_id": invocation.evidence_id,
+        "attempt_count": invocation.attempt_count,
+        "duration_ms": invocation.duration_ms,
+        "error_code": invocation.error_code,
+        "started_at": (
+            invocation.started_at.isoformat() if invocation.started_at else None
+        ),
+        "finished_at": (
+            invocation.finished_at.isoformat() if invocation.finished_at else None
+        ),
+    }
+
+
+def serialize_agent_step(step: AgentStep) -> dict[str, Any]:
+    return {
+        "id": step.id,
+        "agent_run_id": step.agent_run_id,
+        "sequence": step.sequence,
+        "step_type": enum_value(step.step_type) if step.step_type else None,
+        "status": enum_value(step.status),
+        "decision_provider": step.decision_provider,
+        "decision_summary": step.decision_summary,
+        "confidence": step.confidence,
+        "evidence_ids": step.evidence_ids,
+        "context_version": step.context_version,
+        "context_hash": step.context_hash,
+        "error_code": step.error_code,
+        "started_at": step.started_at.isoformat(),
+        "finished_at": step.finished_at.isoformat() if step.finished_at else None,
+        "tool_invocation": (
+            serialize_tool_invocation(step.tool_invocation)
+            if step.tool_invocation
+            else None
+        ),
     }
 
 
@@ -199,10 +281,14 @@ class OpsService:
         *,
         evidence_collector=None,
         diagnosis_engine=None,
+        agent_orchestrator=None,
+        agent_core_enabled: bool = False,
     ):
         self.session_factory = session_factory
         self.evidence_collector = evidence_collector or EvidenceCollector()
         self.diagnosis_engine = diagnosis_engine or RuleDiagnosis()
+        self.agent_orchestrator = agent_orchestrator
+        self.agent_core_enabled = agent_core_enabled
 
     @staticmethod
     def _audit(
@@ -561,11 +647,38 @@ class OpsService:
         idempotency_key: str | None,
         *,
         enqueue: bool = False,
+        goal: str | None = None,
+        budget: dict[str, Any] | None = None,
+        model_name: str | None = None,
     ) -> tuple[AgentRun, bool]:
         try:
             run_mode = AgentRunMode(mode)
         except ValueError as error:
             raise ValidationError("unsupported agent run mode") from error
+
+        goal = goal or "Diagnose the incident from read-only evidence"
+        if not isinstance(goal, str) or not goal.strip() or len(goal) > 500:
+            raise ValidationError("goal must be a non-empty string up to 500 characters")
+        budget = budget or {}
+        if not isinstance(budget, dict):
+            raise ValidationError("budget must be an object")
+        budget_spec = {
+            "max_steps": (8, 1, 16),
+            "max_tool_calls": (6, 1, 12),
+            "run_timeout_seconds": (120, 10, 300),
+            "per_tool_timeout_seconds": (15, 1, 30),
+            "max_model_calls": (4, 0, 8),
+            "max_total_tokens": (20000, 1000, 100000),
+        }
+        unknown = set(budget) - set(budget_spec)
+        if unknown:
+            raise ValidationError(f"unsupported budget field: {sorted(unknown)[0]}")
+        values = {}
+        for name, (default, minimum, maximum) in budget_spec.items():
+            value = budget.get(name, default)
+            if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
+                raise ValidationError(f"{name} must be between {minimum} and {maximum}")
+            values[name] = value
 
         def existing_run() -> AgentRun | None:
             if not idempotency_key:
@@ -596,6 +709,17 @@ class OpsService:
                     incident_id=incident_id,
                     mode=run_mode,
                     idempotency_key=idempotency_key,
+                    goal=goal.strip(),
+                    target_snapshot={
+                        "cluster": incident.cluster,
+                        "namespace": incident.namespace,
+                        "resource_kind": incident.resource_kind,
+                        "resource_name": incident.resource_name,
+                        "resource_uid": (incident.source_context or {}).get("resource_uid")
+                        or (incident.source_context or {}).get("uid"),
+                    },
+                    model_name=model_name,
+                    **values,
                 )
                 session.add(run)
                 session.flush()
@@ -606,7 +730,7 @@ class OpsService:
                     "agent_run.created",
                     actor_type="SYSTEM",
                     actor_id="api",
-                    payload={"mode": run_mode.value},
+                    payload={"mode": run_mode.value, "goal": run.goal, "budget": values},
                 )
                 if enqueue:
                     self._outbox(
@@ -624,6 +748,8 @@ class OpsService:
             raise
 
     def process_diagnosis(self, run_id: str) -> AgentRun:
+        if self.agent_core_enabled and self.agent_orchestrator:
+            return self.agent_orchestrator.process(run_id)
         with self.session_factory.begin() as session:
             run = session.get(AgentRun, run_id)
             if not run:
@@ -690,6 +816,14 @@ class OpsService:
             AGENT_RUNS.labels(run.mode.value, "COMPLETED").inc()
             return run
 
+    def cancel_agent_run(self, run_id: str) -> AgentRun:
+        if not self.agent_core_enabled or not self.agent_orchestrator:
+            raise ValidationError("agent run cancellation requires Agent Core")
+        try:
+            return self.agent_orchestrator.request_cancel(run_id)
+        except LookupError as error:
+            raise NotFoundError("agent run not found") from error
+
     def get_agent_run(self, run_id: str) -> AgentRun:
         with self.session_factory() as session:
             run = session.get(AgentRun, run_id)
@@ -720,6 +854,19 @@ class OpsService:
                 ).all()
             )
 
+    def list_agent_steps(self, run_id: str) -> list[AgentStep]:
+        with self.session_factory() as session:
+            if not session.get(AgentRun, run_id):
+                raise NotFoundError("agent run not found")
+            return list(
+                session.scalars(
+                    select(AgentStep)
+                    .options(selectinload(AgentStep.tool_invocation))
+                    .where(AgentStep.agent_run_id == run_id)
+                    .order_by(AgentStep.sequence)
+                ).all()
+            )
+
     def fail_agent_run(self, run_id: str, error: str) -> AgentRun:
         with self.session_factory.begin() as session:
             run = session.get(AgentRun, run_id)
@@ -727,7 +874,10 @@ class OpsService:
                 raise NotFoundError("agent run not found")
             if run.status not in {
                 AgentRunStatus.COMPLETED,
+                AgentRunStatus.AWAITING_HUMAN,
+                AgentRunStatus.STOPPED,
                 AgentRunStatus.FAILED,
+                AgentRunStatus.CANCELLED,
             }:
                 validate_transition(run.status, AgentRunStatus.FAILED)
                 run.status = AgentRunStatus.FAILED

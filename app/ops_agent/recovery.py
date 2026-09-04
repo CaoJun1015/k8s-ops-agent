@@ -51,7 +51,11 @@ def recover_stuck_work_once(
                 select(AgentRun)
                 .where(
                     AgentRun.status.in_(
-                        [AgentRunStatus.COLLECTING, AgentRunStatus.DIAGNOSING]
+                        [
+                            AgentRunStatus.RUNNING,
+                            AgentRunStatus.COLLECTING,
+                            AgentRunStatus.DIAGNOSING,
+                        ]
                     ),
                     AgentRun.started_at.is_not(None),
                     AgentRun.started_at <= agent_cutoff,
@@ -60,9 +64,15 @@ def recover_stuck_work_once(
             ).all()
         )
         for run in runs:
-            run.status = AgentRunStatus.FAILED
-            run.error = "agent run exceeded configured timeout"
+            is_agent_core = run.status == AgentRunStatus.RUNNING
+            run.status = (
+                AgentRunStatus.STOPPED if is_agent_core else AgentRunStatus.FAILED
+            )
+            run.stop_reason = "WORKER_INTERRUPTED" if is_agent_core else "RUN_TIMEOUT"
+            run.error = "agent worker lease or configured timeout expired"
             run.finished_at = now
+            run.lease_owner = None
+            run.lease_expires_at = None
             incident = session.get(Incident, run.incident_id)
             if incident and incident.status == IncidentStatus.DIAGNOSING:
                 incident.status = IncidentStatus.FAILED
@@ -73,6 +83,19 @@ def recover_stuck_work_once(
                 "agent_run.timed_out",
                 {"timeout_seconds": agent_timeout_seconds},
             )
+            if is_agent_core:
+                session.add(
+                    Task(
+                        incident_id=incident.id,
+                        title="Agent 中断后需要人工确认",
+                        description="只读调查 Worker 中断，系统未自动重放不确定步骤。",
+                        task_type=TaskType.MANUAL_CHECK,
+                        priority=Priority.HIGH,
+                        created_by="timeout-recovery",
+                        related_entity_type="AgentRun",
+                        related_entity_id=run.id,
+                    )
+                )
             result["agent_runs_failed"] += 1
 
         executions = list(

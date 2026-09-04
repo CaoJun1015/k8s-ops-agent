@@ -14,6 +14,7 @@ from ops_agent.services import (
     PolicyDeniedError,
     ValidationError,
     serialize_agent_run,
+    serialize_agent_step,
     serialize_audit,
     serialize_incident,
     serialize_execution,
@@ -123,6 +124,13 @@ def create_agent_run(incident_id):
         mode,
         request.headers.get("Idempotency-Key"),
         enqueue=current_app.config["QUEUE_MODE"] != "inline",
+        goal=body.get("goal"),
+        budget=body.get("budget"),
+        model_name=(
+            current_app.config["OPENAI_MODEL"]
+            if current_app.config.get("AGENT_REASONER_PROVIDER") == "rules+openai"
+            else None
+        ),
     )
     if created and current_app.config["QUEUE_MODE"] == "inline":
         run = service().process_diagnosis(run.id)
@@ -150,6 +158,18 @@ def list_agent_run_evidence(run_id):
     return jsonify(
         [serialize_evidence(item) for item in service().list_evidence(run_id)]
     )
+
+
+@api.get("/agent-runs/<run_id>/steps")
+def list_agent_run_steps(run_id):
+    return jsonify(
+        [serialize_agent_step(item) for item in service().list_agent_steps(run_id)]
+    )
+
+
+@api.post("/agent-runs/<run_id>/cancel")
+def cancel_agent_run(run_id):
+    return jsonify(serialize_agent_run(service().cancel_agent_run(run_id))), 202
 
 
 @api.get("/audit-events")
@@ -264,7 +284,10 @@ def receive_prometheus_alerts():
             )
             if current_app.config["QUEUE_MODE"] == "inline":
                 service().process_diagnosis(run.id)
-                if current_app.config["AUTO_REMEDIATE_ENABLED"]:
+                if (
+                    current_app.config["AUTO_REMEDIATE_ENABLED"]
+                    and not current_app.config["AGENT_CORE_ENABLED"]
+                ):
                     attempt_auto_remediation(
                         service=service(),
                         incident_id=incident.id,

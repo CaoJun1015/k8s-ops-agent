@@ -37,6 +37,8 @@ services:
       REDIS_URL: redis://redis:6379/0
       QUEUE_MODE: rq
       EXECUTION_MODE: rq
+      AGENT_CORE_ENABLED: "true"
+      AGENT_REASONER_PROVIDER: rules
       AUTO_REMEDIATE_ENABLED: "false"
       ALLOWED_NAMESPACES: default
       REQUIRE_OPERATOR_AUTH: "true"
@@ -58,11 +60,24 @@ services:
       redis:
         condition: service_healthy
 
-  worker:
+  agent-worker:
     build:
       context: ..
       dockerfile: docker/Dockerfile
-    command: ["rq", "worker", "--url", "redis://redis:6379/0", "agent-runs", "executions"]
+    command: ["rq", "worker", "--url", "redis://redis:6379/0", "agent-runs"]
+    restart: always
+    environment: *ops-agent-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  execution-worker:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    command: ["rq", "worker", "--url", "redis://redis:6379/0", "executions"]
     restart: always
     environment: *ops-agent-env
     depends_on:

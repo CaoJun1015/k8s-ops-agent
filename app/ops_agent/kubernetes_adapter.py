@@ -228,6 +228,208 @@ class KubernetesAdapter:
             "resource_limits": resource_limits,
         }
 
+    def get_pod_status(
+        self, *, namespace: str, pod_name: str, timeout_seconds: int = 15
+    ) -> dict:
+        """Return structured Pod status without collecting logs or events."""
+        self._load()
+        pod = self._core_api.read_namespaced_pod(
+            pod_name, namespace, _request_timeout=timeout_seconds
+        )
+        status_by_name = {
+            item.name: item for item in (pod.status.container_statuses or [])
+        }
+        containers = []
+        for container in pod.spec.containers or []:
+            status = status_by_name.get(container.name)
+            state = status.state if status else None
+            last_state = status.last_state if status else None
+            containers.append(
+                {
+                    "name": container.name,
+                    "ready": bool(status.ready) if status else False,
+                    "restart_count": status.restart_count if status else 0,
+                    "waiting_reason": state.waiting.reason if state and state.waiting else None,
+                    "terminated_reason": state.terminated.reason if state and state.terminated else None,
+                    "last_exit_code": last_state.terminated.exit_code if last_state and last_state.terminated else None,
+                    "last_terminated_reason": last_state.terminated.reason if last_state and last_state.terminated else None,
+                }
+            )
+        ready = any(
+            condition.type == "Ready" and condition.status == "True"
+            for condition in pod.status.conditions or []
+        )
+        return {
+            "exists": True,
+            "uid": pod.metadata.uid,
+            "phase": pod.status.phase,
+            "reason": pod.status.reason,
+            "ready": ready,
+            "pod_ip": pod.status.pod_ip,
+            "node_name": pod.spec.node_name,
+            "containers": containers,
+        }
+
+    def get_pod_logs(
+        self,
+        *,
+        namespace: str,
+        pod_name: str,
+        previous: bool = False,
+        container: str | None = None,
+        tail_lines: int = 200,
+        timeout_seconds: int = 15,
+    ) -> dict:
+        self._load()
+        pod = self._core_api.read_namespaced_pod(
+            pod_name, namespace, _request_timeout=timeout_seconds
+        )
+        names = [container] if container else [item.name for item in pod.spec.containers or []]
+        logs = {}
+        for name in names:
+            logs[name] = self._core_api.read_namespaced_pod_log(
+                pod_name,
+                namespace,
+                container=name,
+                previous=previous,
+                tail_lines=tail_lines,
+                timestamps=True,
+                _request_timeout=timeout_seconds,
+            ) or ""
+        return {"logs": logs, "previous": previous, "uid": pod.metadata.uid}
+
+    def get_kubernetes_events(
+        self, *, namespace: str, resource_uid: str, timeout_seconds: int = 15
+    ) -> dict:
+        self._load()
+        event_list = self._core_api.list_namespaced_event(
+            namespace,
+            field_selector=f"involvedObject.uid={resource_uid}",
+            limit=50,
+            _request_timeout=timeout_seconds,
+        )
+        return {
+            "resource_uid": resource_uid,
+            "items": [
+                {
+                    "type": event.type,
+                    "reason": event.reason,
+                    "message": event.message,
+                    "count": event.count,
+                    "last_timestamp": str(event.last_timestamp or event.event_time or event.first_timestamp or ""),
+                }
+                for event in (event_list.items or [])
+            ],
+        }
+
+    def get_resource_limits(
+        self, *, namespace: str, pod_name: str, timeout_seconds: int = 15
+    ) -> dict:
+        self._load()
+        pod = self._core_api.read_namespaced_pod(
+            pod_name, namespace, _request_timeout=timeout_seconds
+        )
+        return {
+            "uid": pod.metadata.uid,
+            "containers": {
+                item.name: self._resource_map(item.resources)
+                for item in pod.spec.containers or []
+            },
+        }
+
+    def get_workload_status(
+        self,
+        *,
+        namespace: str,
+        resource_kind: str,
+        resource_name: str,
+        timeout_seconds: int = 15,
+    ) -> dict:
+        self._load()
+        if resource_kind.lower() == "pod":
+            pod = self._core_api.read_namespaced_pod(
+                resource_name, namespace, _request_timeout=timeout_seconds
+            )
+            return self._collect_owner_workload_status(pod, namespace)
+        if resource_kind.lower() == "deployment":
+            workload = self._apps_api.read_namespaced_deployment_status(
+                resource_name, namespace, _request_timeout=timeout_seconds
+            )
+        elif resource_kind.lower() == "statefulset":
+            workload = self._apps_api.read_namespaced_stateful_set_status(
+                resource_name, namespace, _request_timeout=timeout_seconds
+            )
+        else:
+            raise ValueError("unsupported workload kind")
+        return {
+            "kind": resource_kind,
+            "name": resource_name,
+            "managed": True,
+            "uid": workload.metadata.uid,
+            "desired_replicas": workload.spec.replicas or 0,
+            "ready_replicas": workload.status.ready_replicas or 0,
+            "available_replicas": getattr(workload.status, "available_replicas", 0) or 0,
+        }
+
+    def list_related_pods(
+        self,
+        *,
+        namespace: str,
+        workload_kind: str,
+        workload_name: str,
+        timeout_seconds: int = 15,
+    ) -> dict:
+        self._load()
+        if workload_kind.lower() == "deployment":
+            workload = self._apps_api.read_namespaced_deployment(
+                workload_name, namespace, _request_timeout=timeout_seconds
+            )
+        elif workload_kind.lower() == "statefulset":
+            workload = self._apps_api.read_namespaced_stateful_set(
+                workload_name, namespace, _request_timeout=timeout_seconds
+            )
+        else:
+            raise ValueError("unsupported workload kind")
+        labels = workload.spec.selector.match_labels or {}
+        selector = ",".join(f"{key}={value}" for key, value in sorted(labels.items()))
+        pods = self._core_api.list_namespaced_pod(
+            namespace, label_selector=selector, limit=100, _request_timeout=timeout_seconds
+        )
+        return {
+            "workload_uid": workload.metadata.uid,
+            "items": [
+                {"name": item.metadata.name, "uid": item.metadata.uid, "phase": item.status.phase}
+                for item in pods.items or []
+            ],
+        }
+
+    def get_rollout_history(
+        self, *, namespace: str, deployment_name: str, timeout_seconds: int = 15
+    ) -> dict:
+        self._load()
+        deployment = self._apps_api.read_namespaced_deployment(
+            deployment_name, namespace, _request_timeout=timeout_seconds
+        )
+        selector = ",".join(
+            f"{key}={value}"
+            for key, value in sorted((deployment.spec.selector.match_labels or {}).items())
+        )
+        replica_sets = self._apps_api.list_namespaced_replica_set(
+            namespace, label_selector=selector, limit=50, _request_timeout=timeout_seconds
+        )
+        return {
+            "deployment_uid": deployment.metadata.uid,
+            "items": [
+                {
+                    "name": item.metadata.name,
+                    "revision": (item.metadata.annotations or {}).get("deployment.kubernetes.io/revision"),
+                    "replicas": item.status.replicas or 0,
+                    "ready_replicas": item.status.ready_replicas or 0,
+                }
+                for item in replica_sets.items or []
+            ],
+        }
+
     def _collect_owner_workload_status(self, pod, namespace: str) -> dict:
         owner_references = pod.metadata.owner_references or []
         if not owner_references:

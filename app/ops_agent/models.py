@@ -25,6 +25,8 @@ from ops_agent.database import Base
 from ops_agent.domain import (
     AgentRunMode,
     AgentRunStatus,
+    AgentStepStatus,
+    AgentStepType,
     EvidenceType,
     ExecutionStatus,
     IncidentSeverity,
@@ -35,6 +37,7 @@ from ops_agent.domain import (
     RiskLevel,
     TaskStatus,
     TaskType,
+    ToolInvocationStatus,
 )
 
 
@@ -186,6 +189,40 @@ class AgentRun(TimestampMixin, Base):
         String(255), unique=True, index=True
     )
     diagnosis: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    goal: Mapped[str] = mapped_column(
+        String(500), default="Diagnose the incident from read-only evidence", nullable=False
+    )
+    autonomy_level: Mapped[str] = mapped_column(
+        String(10), default="L2", nullable=False
+    )
+    target_snapshot: Mapped[dict[str, Any]] = mapped_column(
+        JSON, default=dict, nullable=False
+    )
+    current_step: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    max_steps: Mapped[int] = mapped_column(Integer, default=8, nullable=False)
+    max_tool_calls: Mapped[int] = mapped_column(Integer, default=6, nullable=False)
+    tool_calls_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    per_tool_timeout_seconds: Mapped[int] = mapped_column(
+        Integer, default=15, nullable=False
+    )
+    run_timeout_seconds: Mapped[int] = mapped_column(
+        Integer, default=120, nullable=False
+    )
+    max_model_calls: Mapped[int] = mapped_column(Integer, default=4, nullable=False)
+    model_calls_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    max_total_tokens: Mapped[int] = mapped_column(Integer, default=20000, nullable=False)
+    input_tokens_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    output_tokens_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    deadline_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    stop_reason: Mapped[str | None] = mapped_column(String(100))
+    model_name: Mapped[str | None] = mapped_column(String(100))
+    prompt_version: Mapped[str] = mapped_column(
+        String(50), default="agent-context-v1", nullable=False
+    )
+    cancel_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    lease_owner: Mapped[str | None] = mapped_column(String(100))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error: Mapped[str | None] = mapped_column(Text)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -195,6 +232,86 @@ class AgentRun(TimestampMixin, Base):
     evidence: Mapped[list[Evidence]] = relationship(
         back_populates="agent_run", cascade="all, delete-orphan"
     )
+    steps: Mapped[list[AgentStep]] = relationship(
+        back_populates="agent_run",
+        cascade="all, delete-orphan",
+        order_by="AgentStep.sequence",
+    )
+
+
+class AgentStep(Base):
+    __tablename__ = "agent_steps"
+    __table_args__ = (
+        UniqueConstraint("agent_run_id", "sequence", name="uq_agent_step_sequence"),
+        UniqueConstraint("idempotency_key", name="uq_agent_step_idempotency"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    agent_run_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    step_type: Mapped[AgentStepType | None] = mapped_column(
+        Enum(AgentStepType, native_enum=False, length=32)
+    )
+    status: Mapped[AgentStepStatus] = enum_column(
+        AgentStepStatus, AgentStepStatus.RUNNING
+    )
+    decision_provider: Mapped[str | None] = mapped_column(String(50))
+    decision_summary: Mapped[str | None] = mapped_column(String(500))
+    confidence: Mapped[float | None] = mapped_column()
+    evidence_ids: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    context_version: Mapped[str] = mapped_column(
+        String(50), default="agent-context-v1", nullable=False
+    )
+    context_snapshot: Mapped[dict[str, Any]] = mapped_column(
+        JSON, default=dict, nullable=False
+    )
+    context_hash: Mapped[str | None] = mapped_column(String(64))
+    error_code: Mapped[str | None] = mapped_column(String(100))
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    agent_run: Mapped[AgentRun] = relationship(back_populates="steps")
+    tool_invocation: Mapped[ToolInvocation | None] = relationship(
+        back_populates="agent_step", cascade="all, delete-orphan", uselist=False
+    )
+
+
+class ToolInvocation(Base):
+    __tablename__ = "tool_invocations"
+    __table_args__ = (
+        UniqueConstraint("agent_step_id", name="uq_tool_invocation_step"),
+        UniqueConstraint("idempotency_key", name="uq_tool_invocation_idempotency"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    agent_step_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_steps.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    tool_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    tool_version: Mapped[str] = mapped_column(String(20), nullable=False)
+    sanitized_arguments: Mapped[dict[str, Any]] = mapped_column(
+        JSON, default=dict, nullable=False
+    )
+    status: Mapped[ToolInvocationStatus] = enum_column(
+        ToolInvocationStatus, ToolInvocationStatus.PENDING
+    )
+    evidence_id: Mapped[str | None] = mapped_column(
+        ForeignKey("evidence.id", ondelete="SET NULL"), index=True
+    )
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    error_code: Mapped[str | None] = mapped_column(String(100))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    agent_step: Mapped[AgentStep] = relationship(back_populates="tool_invocation")
+    evidence: Mapped[Evidence | None] = relationship()
 
 
 class Evidence(Base):

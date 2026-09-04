@@ -78,14 +78,47 @@ class ExecutionStatus(StrEnum):
 
 class AgentRunStatus(StrEnum):
     QUEUED = "QUEUED"
+    RUNNING = "RUNNING"
     COLLECTING = "COLLECTING"
     DIAGNOSING = "DIAGNOSING"
     COMPLETED = "COMPLETED"
+    AWAITING_HUMAN = "AWAITING_HUMAN"
+    STOPPED = "STOPPED"
     FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
 
 
 class AgentRunMode(StrEnum):
     DIAGNOSE_ONLY = "DIAGNOSE_ONLY"
+
+
+class AgentStepType(StrEnum):
+    CALL_TOOL = "CALL_TOOL"
+    COMPLETE = "COMPLETE"
+    ASK_HUMAN = "ASK_HUMAN"
+    STOP = "STOP"
+
+
+class AgentStepStatus(StrEnum):
+    RUNNING = "RUNNING"
+    SUCCEEDED = "SUCCEEDED"
+    FAILED = "FAILED"
+    DENIED = "DENIED"
+
+
+class ToolInvocationStatus(StrEnum):
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    SUCCEEDED = "SUCCEEDED"
+    FAILED = "FAILED"
+    TIMED_OUT = "TIMED_OUT"
+    DENIED = "DENIED"
+
+
+class PolicyDecision(StrEnum):
+    ALLOW = "ALLOW"
+    DENY = "DENY"
+    ASK_HUMAN = "ASK_HUMAN"
 
 
 class EvidenceType(StrEnum):
@@ -205,8 +238,17 @@ TRANSITIONS = {
     },
     AgentRunStatus: {
         AgentRunStatus.QUEUED: {
+            AgentRunStatus.RUNNING,
             AgentRunStatus.COLLECTING,
             AgentRunStatus.FAILED,
+            AgentRunStatus.CANCELLED,
+        },
+        AgentRunStatus.RUNNING: {
+            AgentRunStatus.COMPLETED,
+            AgentRunStatus.AWAITING_HUMAN,
+            AgentRunStatus.STOPPED,
+            AgentRunStatus.FAILED,
+            AgentRunStatus.CANCELLED,
         },
         AgentRunStatus.COLLECTING: {
             AgentRunStatus.DIAGNOSING,
@@ -217,7 +259,10 @@ TRANSITIONS = {
             AgentRunStatus.FAILED,
         },
         AgentRunStatus.COMPLETED: set(),
+        AgentRunStatus.AWAITING_HUMAN: {AgentRunStatus.CANCELLED},
+        AgentRunStatus.STOPPED: set(),
         AgentRunStatus.FAILED: set(),
+        AgentRunStatus.CANCELLED: set(),
     },
 }
 

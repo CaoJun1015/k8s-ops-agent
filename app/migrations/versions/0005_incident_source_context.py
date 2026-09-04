@@ -24,7 +24,8 @@ def upgrade() -> None:
             server_default=sa.text("'{}'"),
         ),
     )
-    op.alter_column("incidents", "source_context", server_default=None)
+    with op.batch_alter_table("incidents") as batch:
+        batch.alter_column("source_context", server_default=None)
 
 
 def downgrade() -> None:

@@ -24,7 +24,8 @@ def upgrade() -> None:
             server_default="1",
         ),
     )
-    op.alter_column("incidents", "occurrence_count", server_default=None)
+    with op.batch_alter_table("incidents") as batch:
+        batch.alter_column("occurrence_count", server_default=None)
     op.create_index(
         "uq_active_incident_fingerprint",
         "incidents",

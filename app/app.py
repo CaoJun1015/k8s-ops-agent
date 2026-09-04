@@ -26,6 +26,13 @@ from ops_agent.evidence import EvidenceCollector
 from ops_agent.diagnosis import build_diagnosis_pipeline
 from ops_agent.prometheus_adapter import PrometheusAdapter
 from ops_agent.verification import IncidentVerifier
+from ops_agent.agent_core import (
+    AgentOrchestrator,
+    FallbackReasoner,
+    OpenAIDecisionReasoner,
+    RuleReasoner,
+)
+from ops_agent.tooling import build_read_only_registry
 
 
 def create_app(overrides=None) -> Flask:
@@ -41,6 +48,9 @@ def create_app(overrides=None) -> Flask:
         CHECK_REDIS=True,
         AUTO_CREATE_SCHEMA=database_url.startswith("sqlite"),
         DIAGNOSIS_PROVIDER=os.environ.get("DIAGNOSIS_PROVIDER", "rules"),
+        AGENT_CORE_ENABLED=os.environ.get("AGENT_CORE_ENABLED", "true").lower()
+        == "true",
+        AGENT_REASONER_PROVIDER=os.environ.get("AGENT_REASONER_PROVIDER", "rules"),
         OPENAI_API_KEY=os.environ.get("OPENAI_API_KEY", ""),
         OPENAI_MODEL=os.environ.get("OPENAI_MODEL", "gpt-5.4-mini"),
         PROMETHEUS_URL=os.environ.get("PROMETHEUS_URL", ""),
@@ -64,6 +74,8 @@ def create_app(overrides=None) -> Flask:
         application.config.update(overrides)
     if application.config["TESTING"]:
         application.config["CHECK_REDIS"] = False
+        if not overrides or "AGENT_CORE_ENABLED" not in overrides:
+            application.config["AGENT_CORE_ENABLED"] = False
 
     database = Database(application.config["DATABASE_URL"])
     if application.config["AUTO_CREATE_SCHEMA"]:
@@ -84,6 +96,40 @@ def create_app(overrides=None) -> Flask:
     application.extensions["incident_verifier"] = IncidentVerifier(
         application.extensions["kubernetes_adapter"], prometheus_adapter
     )
+    registry = build_read_only_registry(
+        application.extensions["kubernetes_adapter"],
+        prometheus_adapter,
+        allowed_namespaces=application.config["ALLOWED_NAMESPACES"],
+    )
+    reasoner = application.config.get("AGENT_REASONER")
+    if reasoner is None:
+        provider = application.config["AGENT_REASONER_PROVIDER"]
+        if provider == "rules":
+            reasoner = RuleReasoner()
+        elif provider == "rules+openai":
+            client = application.config.get("OPENAI_AGENT_CLIENT")
+            if client is None:
+                if not application.config["OPENAI_API_KEY"]:
+                    raise ValueError("OPENAI_API_KEY is required for rules+openai")
+                from openai import OpenAI
+
+                client = OpenAI(
+                    api_key=application.config["OPENAI_API_KEY"],
+                    timeout=15.0,
+                    max_retries=1,
+                )
+            reasoner = FallbackReasoner(
+                OpenAIDecisionReasoner(client, application.config["OPENAI_MODEL"])
+            )
+        else:
+            raise ValueError(f"unsupported Agent reasoner provider: {provider}")
+    orchestrator = AgentOrchestrator(
+        database.session_factory,
+        registry,
+        reasoner=reasoner,
+    )
+    application.extensions["agent_registry"] = registry
+    application.extensions["agent_orchestrator"] = orchestrator
     application.extensions["ops_service"] = OpsService(
         database.session_factory,
         evidence_collector=EvidenceCollector(
@@ -96,6 +142,8 @@ def create_app(overrides=None) -> Flask:
             model=application.config["OPENAI_MODEL"],
             client=application.config.get("OPENAI_DIAGNOSIS_CLIENT"),
         ),
+        agent_orchestrator=orchestrator,
+        agent_core_enabled=application.config["AGENT_CORE_ENABLED"],
     )
     application.register_blueprint(api)
 

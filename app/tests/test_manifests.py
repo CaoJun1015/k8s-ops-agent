@@ -54,15 +54,20 @@ def test_service_monitor_selects_named_ops_agent_metrics_port():
     assert monitor["spec"]["endpoints"][0]["port"] == "http"
 
 
-def test_worker_uses_dedicated_service_account_and_execution_queue():
-    """后台 Worker 必须通过受限 ServiceAccount 消费两个明确队列。"""
+def test_agent_and_execution_workers_use_separate_queues_and_identities():
+    """只读调查和变更执行必须使用不同身份与队列。"""
     deployment = load_documents("k8s/worker-deployment.yaml")[0]
     pod_spec = deployment["spec"]["template"]["spec"]
     command = pod_spec["containers"][0]["command"]
 
-    assert pod_spec["serviceAccountName"] == "ops-agent-worker"
+    assert pod_spec["serviceAccountName"] == "ops-agent-agent"
     assert "agent-runs" in command
-    assert "executions" in command
+    assert "executions" not in command
+
+    executor = load_documents("k8s/execution-worker-deployment.yaml")[0]
+    executor_spec = executor["spec"]["template"]["spec"]
+    assert executor_spec["serviceAccountName"] == "ops-agent-executor"
+    assert "executions" in executor_spec["containers"][0]["command"]
 
 
 def test_outbox_dispatcher_has_dedicated_identity_and_no_cluster_role():
@@ -86,8 +91,8 @@ def test_outbox_dispatcher_has_dedicated_identity_and_no_cluster_role():
     ]
 
 
-def test_only_worker_role_can_delete_pods():
-    """API 只能读取诊断证据，只有执行 Worker 可以删除 Pod。"""
+def test_only_execution_worker_role_can_delete_pods():
+    """API 和 Agent 只能读取，只有 Execution Worker 可以删除 Pod。"""
     resources = load_documents("k8s/rbac.yaml")
     roles = {
         item["metadata"]["name"]: item
@@ -100,13 +105,19 @@ def test_only_worker_role_can_delete_pods():
         for rule in roles["ops-agent-api"]["rules"]
         for verb in rule["verbs"]
     }
-    worker_pod_rule = next(
+    agent_pod_rule = next(
         rule
-        for rule in roles["ops-agent-worker"]["rules"]
+        for rule in roles["ops-agent-agent"]["rules"]
+        if "pods" in rule["resources"]
+    )
+    executor_pod_rule = next(
+        rule
+        for rule in roles["ops-agent-executor"]["rules"]
         if "pods" in rule["resources"]
     )
     assert "delete" not in api_verbs
-    assert "delete" in worker_pod_rule["verbs"]
+    assert "delete" not in agent_pod_rule["verbs"]
+    assert "delete" in executor_pod_rule["verbs"]
 
 
 def test_monitoring_files_are_valid_multi_document_yaml():
