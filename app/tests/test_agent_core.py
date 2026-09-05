@@ -124,6 +124,17 @@ def test_agent_core_selects_multiple_tools_and_persists_timeline(agent_app):
     assert set(run["diagnosis"]["evidence_ids"]).issubset({item["id"] for item in evidence})
     assert run["budget"]["tool_calls_used"] == 3
     assert all(step["context_hash"] for step in steps)
+    assert all(
+        link["url"] == f"/api/agent-runs/{run['id']}/evidence"
+        for step in steps
+        for link in step["evidence_links"]
+    )
+    assert all(
+        step["tool_invocation"]["evidence_url"]
+        == f"/api/agent-runs/{run['id']}/evidence"
+        for step in steps
+        if step["tool_invocation"]
+    )
 
 
 def test_step_budget_stops_loop_without_write_action(agent_app):
@@ -232,3 +243,38 @@ def test_budget_validation_rejects_unknown_or_out_of_range_values(agent_app):
         json={"budget": {"dollars": 1}},
     )
     assert too_large.status_code == unknown.status_code == 400
+
+
+def test_duplicate_worker_delivery_does_not_repeat_completed_steps(agent_app):
+    agent_app.config["QUEUE_MODE"] = "rq"
+    client = agent_app.test_client()
+    incident = create_pod_incident(client)
+    accepted = client.post(f"/api/incidents/{incident['id']}/agent-runs")
+    run_id = accepted.get_json()["id"]
+    orchestrator = agent_app.extensions["agent_orchestrator"]
+
+    first = orchestrator.process(run_id)
+    second = orchestrator.process(run_id)
+    steps = client.get(f"/api/agent-runs/{run_id}/steps").get_json()
+
+    assert first.status.value == second.status.value == "COMPLETED"
+    assert len(steps) == 4
+
+
+def test_tool_timeout_hands_off_and_creates_action_task(agent_app):
+    def timeout(**_kwargs):
+        raise TimeoutError("untrusted timeout detail token=secret")
+
+    agent_app.extensions["test_agent_adapter"].get_pod_status = timeout
+    client = agent_app.test_client()
+    incident = create_pod_incident(client)
+    accepted = client.post(f"/api/incidents/{incident['id']}/agent-runs")
+    run = client.get(accepted.get_json()["location"]).get_json()
+    tasks = client.get(f"/api/tasks?incident_id={incident['id']}").get_json()
+    steps = client.get(run["steps_url"]).get_json()
+
+    assert run["status"] == "AWAITING_HUMAN"
+    assert run["stop_reason"] == "TOOL_TRANSIENT_ERROR"
+    assert tasks[0]["related_entity_id"] == run["id"]
+    assert steps[0]["tool_invocation"]["attempt_count"] == 2
+    assert "secret" not in str(steps)

@@ -24,6 +24,14 @@ def test_ops_agent_deployment_uses_split_health_probes_and_pullable_image():
     assert container["readinessProbe"]["httpGet"]["path"] == "/ready"
 
 
+def test_runtime_image_uses_numeric_non_root_identity():
+    """Kubernetes 必须能在启动前验证镜像用户不是 root。"""
+    dockerfile = (ROOT / "docker" / "Dockerfile").read_text(encoding="utf-8")
+
+    assert "useradd --uid 10001 --gid 10001" in dockerfile
+    assert "USER 10001:10001" in dockerfile
+
+
 def test_api_configures_gunicorn_multiprocess_metrics_directory():
     """API Pod 必须为多进程 Prometheus 指标提供独立临时目录。"""
     deployment = load_documents("k8s/app-deployment.yaml")[0]
@@ -169,11 +177,15 @@ def test_kind_e2e_covers_fault_diagnosis_evidence_and_recovery():
         "scenario-crashloop.yaml",
         '"status":"firing"',
         "/evidence",
+        "/steps",
+        "ops-agent-agent",
         '"diagnosis_code":"CRASH_LOOP"',
         '"status":"resolved"',
         '"status":"RESOLVED"',
     ):
         assert contract in script
+    assert "busybox:1.36 busybox:e2e" in script
+    assert "image: busybox:e2e" in script
     assert "k8s/secret.yaml" not in script
 
 
@@ -198,3 +210,20 @@ def test_console_uses_occurrence_count_and_exposes_evidence_panel():
     assert "i.occurrence_count" in console
     assert "诊断与证据" in console
     assert "/evidence`" in console
+    assert "timeline-step" in console
+    assert "/cancel" in console
+
+
+def test_agent_dashboard_uses_bounded_metric_labels():
+    dashboard = (ROOT / "monitoring" / "grafana-dashboards.yaml").read_text(
+        encoding="utf-8"
+    )
+    for metric in (
+        "agent_runs_total",
+        "agent_run_duration_seconds_bucket",
+        "agent_tool_calls_total",
+        "agent_budget_exhausted_total",
+        "agent_human_handoff_total",
+    ):
+        assert metric in dashboard
+    assert "incident_id" not in dashboard
