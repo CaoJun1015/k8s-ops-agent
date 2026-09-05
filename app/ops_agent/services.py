@@ -158,7 +158,9 @@ def serialize_agent_run(run: AgentRun) -> dict[str, Any]:
     }
 
 
-def serialize_tool_invocation(invocation: ToolInvocation) -> dict[str, Any]:
+def serialize_tool_invocation(
+    invocation: ToolInvocation, *, agent_run_id: str
+) -> dict[str, Any]:
     return {
         "id": invocation.id,
         "agent_step_id": invocation.agent_step_id,
@@ -167,6 +169,11 @@ def serialize_tool_invocation(invocation: ToolInvocation) -> dict[str, Any]:
         "arguments": invocation.sanitized_arguments,
         "status": enum_value(invocation.status),
         "evidence_id": invocation.evidence_id,
+        "evidence_url": (
+            f"/api/agent-runs/{agent_run_id}/evidence"
+            if invocation.evidence_id
+            else None
+        ),
         "attempt_count": invocation.attempt_count,
         "duration_ms": invocation.duration_ms,
         "error_code": invocation.error_code,
@@ -190,13 +197,22 @@ def serialize_agent_step(step: AgentStep) -> dict[str, Any]:
         "decision_summary": step.decision_summary,
         "confidence": step.confidence,
         "evidence_ids": step.evidence_ids,
+        "evidence_links": [
+            {
+                "id": evidence_id,
+                "url": f"/api/agent-runs/{step.agent_run_id}/evidence",
+            }
+            for evidence_id in step.evidence_ids
+        ],
         "context_version": step.context_version,
         "context_hash": step.context_hash,
         "error_code": step.error_code,
         "started_at": step.started_at.isoformat(),
         "finished_at": step.finished_at.isoformat() if step.finished_at else None,
         "tool_invocation": (
-            serialize_tool_invocation(step.tool_invocation)
+            serialize_tool_invocation(
+                step.tool_invocation, agent_run_id=step.agent_run_id
+            )
             if step.tool_invocation
             else None
         ),

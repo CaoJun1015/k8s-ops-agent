@@ -75,6 +75,41 @@ data:
               "expr": "sum(kube_pod_container_status_restarts_total{namespace=\"default\",pod=~\"ops-agent-.*\"})"
             }
           ]
+        },
+        {
+          "title": "Agent 成功率",
+          "type": "stat",
+          "targets": [
+            {"expr": "sum(rate(agent_runs_total{status=\"COMPLETED\"}[15m])) / clamp_min(sum(rate(agent_runs_total[15m])), 1)"}
+          ]
+        },
+        {
+          "title": "Agent 运行耗时",
+          "type": "timeseries",
+          "targets": [
+            {"expr": "histogram_quantile(0.95, sum(rate(agent_run_duration_seconds_bucket[5m])) by (le))"}
+          ]
+        },
+        {
+          "title": "只读工具失败",
+          "type": "timeseries",
+          "targets": [
+            {"expr": "sum(rate(agent_tool_calls_total{status!=\"SUCCEEDED\"}[5m])) by (tool,status)"}
+          ]
+        },
+        {
+          "title": "预算停止",
+          "type": "timeseries",
+          "targets": [
+            {"expr": "sum(rate(agent_budget_exhausted_total[15m])) by (budget_type)"}
+          ]
+        },
+        {
+          "title": "人工接管",
+          "type": "timeseries",
+          "targets": [
+            {"expr": "sum(rate(agent_human_handoff_total[15m])) by (reason)"}
+          ]
         }
       ]
     }

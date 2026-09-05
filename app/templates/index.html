@@ -23,6 +23,8 @@
     .evidence-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; padding:14px 18px 18px; }
     .evidence-card { background:#091525; border:1px solid var(--line); border-radius:9px; padding:11px; min-width:0; }
     .evidence-card pre { color:var(--muted); font-size:11px; white-space:pre-wrap; overflow-wrap:anywhere; max-height:92px; overflow:hidden; }
+    .timeline { padding:6px 18px 14px; border-left:2px solid var(--line); margin:10px 18px; }
+    .timeline-step { padding:9px 12px; margin:8px 0; background:#091525; border-radius:8px; }
     .panel { overflow:hidden; }
     .panel-head { padding:16px 18px; display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid var(--line); }
     .panel h2 { font-size:16px; margin:0; }
@@ -96,7 +98,7 @@
     </section>
   </main>
   <script>
-    let incidents=[], tasks=[], plans=[], executions=[], runs=[], evidence=[], selectedId=null;
+    let incidents=[], tasks=[], plans=[], executions=[], runs=[], evidence=[], steps=[], selectedId=null;
     const escapeHtml = value => { const node=document.createElement('div'); node.textContent=value ?? ''; return node.innerHTML; };
     async function api(path, options={}) {
       const response=await fetch(path,{...options,headers:{'Content-Type':'application/json',...(options.headers||{})}});
@@ -135,11 +137,11 @@
     }
     async function loadEvidence() {
       const node=document.getElementById('diagnosisStatus');
-      if(!selectedId){evidence=[];node.textContent='请选择事件';renderDiagnosis();return;}
+      if(!selectedId){evidence=[];steps=[];node.textContent='请选择事件';renderDiagnosis();return;}
       const latest=runs.filter(item=>item.incident_id===selectedId).sort((a,b)=>new Date(b.created_at)-new Date(a.created_at))[0];
-      if(!latest){evidence=[];node.textContent='尚无诊断';renderDiagnosis();return;}
+      if(!latest){evidence=[];steps=[];node.textContent='尚无诊断';renderDiagnosis();return;}
       node.textContent=latest.status;
-      evidence=await api(`/api/agent-runs/${latest.id}/evidence`);
+      [evidence,steps]=await Promise.all([api(`/api/agent-runs/${latest.id}/evidence`),api(latest.steps_url)]);
       renderDiagnosis(latest);
     }
     function renderDiagnosis(run) {
@@ -147,9 +149,12 @@
       if(!selectedId){list.innerHTML='<div class="empty">选择一个 Incident 查看最新诊断</div>';return;}
       if(!run){list.innerHTML='<div class="empty">该事件尚无诊断记录</div>';return;}
       const diagnosis=run.diagnosis||{};
-      const summary=`<div class="item"><div class="item-title"><span>${escapeHtml(diagnosis.diagnosis_code||'等待诊断')}</span><span class="badge">置信度 ${Math.round((diagnosis.confidence||0)*100)}%</span></div><div class="meta"><span>${escapeHtml(diagnosis.summary||run.error||'诊断进行中')}</span><span>${escapeHtml(diagnosis.provider||'')}</span></div></div>`;
+      const budget=run.budget||{};
+      const cancel=['QUEUED','RUNNING'].includes(run.status)?`<button class="secondary" onclick="cancelRun('${run.id}')">取消运行</button>`:'';
+      const summary=`<div class="item"><div class="item-title"><span>${escapeHtml(diagnosis.diagnosis_code||run.stop_reason||'等待诊断')}</span><span class="badge">置信度 ${Math.round((diagnosis.confidence||0)*100)}%</span></div><div class="meta"><span>${escapeHtml(diagnosis.summary||run.error||'诊断进行中')}</span><span>${escapeHtml(diagnosis.provider||'')}</span><span>L2</span><span>步骤 ${run.current_step}/${budget.max_steps??'-'}</span><span>工具 ${budget.tool_calls_used??0}/${budget.max_tool_calls??'-'}</span></div><div class="actions">${cancel}</div></div>`;
+      const timeline=steps.map(step=>{const tool=step.tool_invocation;return `<div class="timeline-step"><div class="item-title"><span>#${step.sequence} ${escapeHtml(step.step_type||'DECIDING')}</span><span class="badge">${escapeHtml(step.status)}</span></div><div class="meta"><span>${escapeHtml(step.decision_provider||'')}</span><span>${escapeHtml(step.decision_summary||step.error_code||'')}</span>${tool?`<span>${escapeHtml(tool.tool_name)} · ${tool.duration_ms??0}ms · ${escapeHtml(tool.status)}</span>`:''}</div></div>`;}).join('');
       const cards=evidence.map(item=>{const preview=JSON.stringify(item.content,null,2).slice(0,500);return `<div class="evidence-card"><div class="item-title"><span>${escapeHtml(item.evidence_type)}</span><span class="badge">${escapeHtml(item.source)}</span></div><pre>${escapeHtml(preview)}</pre></div>`;}).join('');
-      list.innerHTML=summary+(cards?`<div class="evidence-grid">${cards}</div>`:'<div class="empty">暂无证据</div>');
+      list.innerHTML=summary+(timeline?`<div class="timeline">${timeline}</div>`:'')+(cards?`<div class="evidence-grid">${cards}</div>`:'<div class="empty">暂无证据</div>');
     }
     function operatorHeaders() {
       const token=document.getElementById('operatorToken').value.trim();
@@ -208,13 +213,17 @@
       try { await api(`/api/incidents/${id}/agent-runs`,{method:'POST',body:JSON.stringify({mode:'DIAGNOSE_ONLY'}),headers:{'Idempotency-Key':`ui:${id}:${Date.now()}`}}); await loadAll(); }
       catch(error){showError('incidentError',error.message);}
     }
+    async function cancelRun(id) {
+      try { await api(`/api/agent-runs/${id}/cancel`,{method:'POST'}); await loadAll(); }
+      catch(error){showError('incidentError',error.message);}
+    }
     async function moveTask(id,status) {
       try { await api(`/api/tasks/${id}`,{method:'PATCH',body:JSON.stringify({status})}); await loadAll(); }
       catch(error){showError('taskError',error.message);}
     }
     document.getElementById('incidentForm').addEventListener('submit',async event=>{
       event.preventDefault(); const resource=document.getElementById('resourceName').value.trim();
-      try { const incident=await api('/api/incidents',{method:'POST',body:JSON.stringify({title:document.getElementById('incidentTitle').value,severity:document.getElementById('severity').value,fingerprint:`manual:default:Pod:${resource}:${Date.now()}`,cluster:'local',namespace:'default',resource_kind:'Pod',resource_name:resource,source:'manual'})}); event.target.reset(); selectedId=incident.id; await loadAll(); selectIncident(incident.id); }
+      try { const incident=await api('/api/incidents',{method:'POST',body:JSON.stringify({title:document.getElementById('incidentTitle').value,severity:document.getElementById('severity').value,fingerprint:`manual:default:Pod:${resource}:${Date.now()}`,cluster:'default',namespace:'default',resource_kind:'Pod',resource_name:resource,source:'manual'})}); event.target.reset(); selectedId=incident.id; await loadAll(); selectIncident(incident.id); }
       catch(error){showError('incidentError',error.message);}
     });
     document.getElementById('taskForm').addEventListener('submit',async event=>{
