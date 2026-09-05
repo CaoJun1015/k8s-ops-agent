@@ -563,6 +563,12 @@ class AgentPolicy:
         ]
         if target_names and any(value != incident.resource_name for value in target_names):
             return PolicyResult(PolicyDecision.ASK_HUMAN, "INCIDENT_TARGET_MISMATCH")
+        resource_uid = arguments.get("resource_uid")
+        expected_uid = (run.target_snapshot or {}).get("resource_uid")
+        if resource_uid and not expected_uid:
+            return PolicyResult(PolicyDecision.ASK_HUMAN, "INCIDENT_UID_UNBOUND")
+        if resource_uid and resource_uid != expected_uid:
+            return PolicyResult(PolicyDecision.ASK_HUMAN, "INCIDENT_UID_MISMATCH")
         if run.tool_calls_used >= run.max_tool_calls:
             return PolicyResult(PolicyDecision.DENY, "TOOL_BUDGET_EXHAUSTED")
         fingerprint = invocation_fingerprint(tool_name, arguments)
@@ -970,6 +976,11 @@ class AgentOrchestrator:
                     session.flush()
                     invocation.status = ToolInvocationStatus.SUCCEEDED
                     invocation.evidence_id = record.id
+                    if decision.tool_name == "get_pod_status" and result.content.get("uid"):
+                        target = dict(current.target_snapshot or {})
+                        if not target.get("resource_uid"):
+                            target["resource_uid"] = result.content["uid"]
+                            current.target_snapshot = target
                     step.status = AgentStepStatus.SUCCEEDED
                     step.finished_at = utc_now()
                     self._audit(session, run.id, "agent_tool.succeeded", {"tool": decision.tool_name, "evidence_id": record.id, "duration_ms": duration_ms})

@@ -11,6 +11,7 @@ import pytest
 
 from app import create_app
 from ops_agent.agent_core import (
+    AgentPolicy,
     AgentStepType,
     DecisionError,
     FallbackReasoner,
@@ -18,8 +19,14 @@ from ops_agent.agent_core import (
     RuleReasoner,
     validate_next_decision,
 )
-from ops_agent.tooling import ToolDefinition, ToolError, ToolRegistry, ToolResult
-from ops_agent.domain import EvidenceType
+from ops_agent.tooling import (
+    ToolDefinition,
+    ToolError,
+    ToolRegistry,
+    ToolResult,
+    build_read_only_registry,
+)
+from ops_agent.domain import EvidenceType, PolicyDecision
 
 
 class ReadOnlyFakeKubernetes:
@@ -123,6 +130,7 @@ def test_agent_core_selects_multiple_tools_and_persists_timeline(agent_app):
     ] == ["get_pod_status", "get_previous_logs", "get_kubernetes_events"]
     assert set(run["diagnosis"]["evidence_ids"]).issubset({item["id"] for item in evidence})
     assert run["budget"]["tool_calls_used"] == 3
+    assert run["target"]["resource_uid"] == "pod-uid-1"
     assert all(step["context_hash"] for step in steps)
     assert all(
         link["url"] == f"/api/agent-runs/{run['id']}/evidence"
@@ -195,6 +203,88 @@ def test_registry_rejects_write_tools_and_invalid_arguments_before_handler():
         registry.invoke("read_one", {"unexpected": "x"}, 5)
     assert invalid.value.code == "INVALID_TOOL_ARGUMENTS"
     assert called == []
+
+
+def test_registry_enforces_scope_again_at_execution_boundary(agent_app):
+    registry = agent_app.extensions["agent_registry"]
+
+    with pytest.raises(ToolError) as denied:
+        registry.invoke(
+            "get_pod_status",
+            {
+                "cluster": "default",
+                "namespace": "kube-system",
+                "pod_name": "coredns",
+            },
+            5,
+        )
+
+    assert denied.value.code == "NAMESPACE_SCOPE_DENIED"
+    assert agent_app.extensions["test_agent_adapter"].calls == []
+
+
+def test_policy_requires_event_uid_to_match_the_bound_incident_target(agent_app):
+    registry = agent_app.extensions["agent_registry"]
+    result = AgentPolicy().evaluate(
+        SimpleNamespace(
+            autonomy_level="L2",
+            target_snapshot={"resource_uid": "pod-uid-1"},
+            tool_calls_used=1,
+            max_tool_calls=6,
+        ),
+        SimpleNamespace(
+            cluster="default",
+            namespace="default",
+            resource_name="demo-crashloop-1",
+        ),
+        registry,
+        "get_kubernetes_events",
+        {
+            "cluster": "default",
+            "namespace": "default",
+            "resource_uid": "forged-uid",
+        },
+        set(),
+    )
+
+    assert result.decision == PolicyDecision.ASK_HUMAN
+    assert result.reason_code == "INCIDENT_UID_MISMATCH"
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "arguments", "evidence_type"),
+    [
+        ("get_pod_status", {"pod_name": "pod-1"}, EvidenceType.POD_STATUS),
+        ("get_pod_logs", {"pod_name": "pod-1", "tail_lines": 20}, EvidenceType.CURRENT_LOGS),
+        ("get_previous_logs", {"pod_name": "pod-1", "tail_lines": 20}, EvidenceType.PREVIOUS_LOGS),
+        ("get_kubernetes_events", {"resource_uid": "pod-uid-1"}, EvidenceType.K8S_EVENTS),
+        ("get_workload_status", {"resource_kind": "Deployment", "resource_name": "api"}, EvidenceType.WORKLOAD_STATUS),
+        ("get_resource_limits", {"pod_name": "pod-1"}, EvidenceType.RESOURCE_LIMITS),
+        ("list_related_pods", {"workload_kind": "Deployment", "workload_name": "api"}, EvidenceType.POD_STATUS),
+        ("get_rollout_history", {"deployment_name": "api"}, EvidenceType.WORKLOAD_STATUS),
+        ("query_prometheus", {"query_name": "redis_up", "resource_name": "redis"}, EvidenceType.PROMETHEUS_METRICS),
+    ],
+)
+def test_each_registered_read_only_tool_has_an_independent_contract(
+    tool_name, arguments, evidence_type
+):
+    class FakePrometheus:
+        QUERY_TEMPLATES = {"redis_up": "up"}
+
+        def query_named(self, name, **kwargs):
+            return {"query_name": name, "result": [], "scope": kwargs}
+
+    registry = build_read_only_registry(
+        ReadOnlyFakeKubernetes(), FakePrometheus(), allowed_namespaces={"default"}
+    )
+    result = registry.invoke(
+        tool_name,
+        {"cluster": "default", "namespace": "default", **arguments},
+        5,
+    )
+
+    assert result.evidence_type == evidence_type
+    assert registry.get(tool_name).read_only is True
 
 
 def test_decision_rejects_prompt_injection_and_unknown_evidence(agent_app):

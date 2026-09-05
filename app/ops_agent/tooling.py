@@ -10,6 +10,8 @@ from jsonschema import Draft202012Validator
 from ops_agent.domain import EvidenceType
 from ops_agent.evidence import DEFAULT_LOG_TAIL_LINES, sanitize_content
 
+SYSTEM_NAMESPACES = frozenset({"kube-system", "kube-public", "kube-node-lease"})
+
 
 class ToolError(RuntimeError):
     def __init__(self, code: str, message: str, *, retryable: bool = False):
@@ -66,12 +68,24 @@ class ToolRegistry:
 
     def invoke(self, name: str, arguments: dict[str, Any], timeout_seconds: int) -> ToolResult:
         definition = self.get(name)
+        if not definition.read_only or definition.requires_approval:
+            raise ToolError("WRITE_TOOL_DENIED", "tool is not permitted in Agent Core")
         errors = sorted(
             Draft202012Validator(definition.input_schema).iter_errors(arguments),
             key=lambda item: list(item.path),
         )
         if errors:
             raise ToolError("INVALID_TOOL_ARGUMENTS", errors[0].message)
+        if arguments.get("cluster") not in definition.allowed_clusters:
+            raise ToolError("CLUSTER_SCOPE_DENIED", "cluster is outside the tool scope")
+        namespace = arguments.get("namespace")
+        if (
+            namespace in SYSTEM_NAMESPACES
+            or namespace not in definition.allowed_namespaces
+        ):
+            raise ToolError(
+                "NAMESPACE_SCOPE_DENIED", "namespace is outside the tool scope"
+            )
         try:
             result = definition.handler(arguments, min(timeout_seconds, definition.timeout_seconds))
         except ToolError:
@@ -105,7 +119,7 @@ def build_read_only_registry(
     timeout_seconds: int = 15,
 ) -> ToolRegistry:
     registry = ToolRegistry()
-    namespaces = frozenset(allowed_namespaces or {"default"})
+    namespaces = frozenset(allowed_namespaces or {"default"}) - SYSTEM_NAMESPACES
     clusters = frozenset({cluster})
     base = {
         "cluster": {"type": "string", "const": cluster},
