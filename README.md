@@ -1,14 +1,14 @@
 # K8s Ops Agent
 
 一个以 Incident 为中心的 Kubernetes 运维工作台，支持告警聚合、行动项协作、
-只诊断 AgentRun、受控 Pod 修复、人工审批、结果验证和追加式审计。
+多步只读 AgentRun、受控 Pod 修复、人工审批、结果验证和追加式审计。
 
 ## 业务闭环
 
 ```text
 Prometheus Alert
   → Incident
-  → AgentRun（采集与诊断）
+  → AgentRun（有界评估 → 只读工具 → Evidence → 再评估）
   → Plan（固定 Action Catalog）
   → dry-run / 策略检查
   → 人工审批或低风险自动策略
@@ -28,7 +28,8 @@ Prometheus Alert
 | PostgreSQL | 长期业务事实与审计记录 |
 | Redis + RQ | 后台诊断、执行队列与短期协调 |
 | Outbox Dispatcher | 可靠地把数据库作业请求投递到 RQ |
-| Agent Worker | 只诊断 AgentRun 和已批准的修复执行 |
+| Agent Worker | 使用只读 ServiceAccount 执行多步 L2 调查 |
+| Execution Worker | 使用独立身份执行已批准的白名单修复 |
 | Kubernetes Adapter | 结构化读取与白名单 Pod 重建 |
 | kube-prometheus-stack | Prometheus、Alertmanager、Grafana、集群指标 |
 | Redis exporter | 提供真实 `redis_up` 等指标 |
@@ -69,6 +70,7 @@ kubectl wait --for=condition=complete job/ops-agent-db-migrate --timeout=180s
 
 kubectl apply -f k8s/app-deployment.yaml
 kubectl apply -f k8s/worker-deployment.yaml
+kubectl apply -f k8s/execution-worker-deployment.yaml
 kubectl apply -f k8s/dispatcher-deployment.yaml
 kubectl apply -f k8s/app-service.yaml
 ```
@@ -108,7 +110,7 @@ kubectl apply -f examples/demo-app/k8s/scenario-crashloop.yaml
 bash ci/kind-e2e.sh
 ```
 
-脚本会创建临时 kind 集群，验证 Incident → Evidence → 规则诊断 → 恢复验证，并在
+脚本会创建临时 kind 集群，验证 Incident → 多步只读工具 → Evidence → 规则诊断 → 恢复验证，并在
 结束后删除该集群。设置 `KEEP_KIND_CLUSTER=true` 可保留现场用于排查。
 
 ## 测试
@@ -118,5 +120,5 @@ python -m pytest app/tests -q
 python -m pytest examples/demo-app/tests -q
 ```
 
-领域与演进规范见 `docs/design/ops-agent-domain.md`，v0.2 真实诊断规范见
-`docs/design/v0.2-real-diagnosis.md`，监控说明见 `monitoring/README.md`。
+领域与演进规范见 `docs/design/ops-agent-domain.md`，v0.3 运行、安全与回退见
+`docs/design/v0.3-agent-core.md`，监控说明见 `monitoring/README.md`。

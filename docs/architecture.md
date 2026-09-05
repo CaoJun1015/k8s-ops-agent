@@ -3,7 +3,7 @@
 ## 控制面与演练面
 
 主应用是模块化单体控制面：Flask 提供 API 和控制台，PostgreSQL 保存 Incident、
-Action Task、Plan、Execution、AgentRun、Evidence、Outbox 和 Audit；Redis/RQ 负责
+Action Task、Plan、Execution、AgentRun、AgentStep、ToolInvocation、Evidence、Outbox 和 Audit；Redis/RQ 负责
 异步工作。Outbox Dispatcher 将数据库中已提交的作业请求可靠投递到 RQ，并负责
 识别超时的诊断与执行。
 
@@ -13,7 +13,8 @@ Action Task、Plan、Execution、AgentRun、Evidence、Outbox 和 Audit；Redis/
 ## 核心约束
 
 - 告警先聚合为 Incident，相同活动 fingerprint 不重复建事件。
-- AgentRun 第一职责是采集和诊断，不能提交任意 Shell 命令。
+- AgentRun 通过有界循环按需选择注册的只读工具，不能提交任意 Shell 命令。
+- Agent Worker 与 Execution Worker 使用不同队列和 ServiceAccount；只有后者具有受限写权限。
 - Kubernetes 日志、状态、事件和 Prometheus 指标先脱敏、限长并保存为 Evidence；
   规则或可选 LLM 的结论必须引用 Evidence ID。
 - LLM 默认关闭，启用后也只能返回严格 JSON Schema；任何错误都回退到规则结论。
@@ -25,5 +26,5 @@ Action Task、Plan、Execution、AgentRun、Evidence、Outbox 和 Audit；Redis/
 - Audit 只追加，失败执行也必须提交审计和人工跟进 Task。
 - `/live` 只表示进程存活，`/ready` 检查 PostgreSQL 与 Redis。
 
-完整状态机、API 和交付顺序见 `design/ops-agent-domain.md`；真实诊断和可靠性约束见
-`design/v0.2-real-diagnosis.md`。
+完整状态机、API 和交付顺序见 `design/ops-agent-domain.md`；v0.3 Agent Core 运行、
+安全与回退见 `design/v0.3-agent-core.md`。
