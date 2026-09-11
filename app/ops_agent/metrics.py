@@ -89,6 +89,10 @@ AGENT_DECISION_VALIDATION_FAILURES = Counter(
 AGENT_HUMAN_HANDOFF = Counter(
     "agent_human_handoff_total", "Agent human handoffs", ("reason",)
 )
+AGENT_CONTEXT_BYTES = Histogram(
+    "agent_context_bytes", "Serialized context bytes", buckets=(2048, 8192, 16384, 32768, 65536)
+)
+AGENT_CONTEXT_TRIMMED = Counter("agent_context_trimmed_total", "Steps with omitted or excerpted evidence")
 
 
 def render_metrics() -> bytes:

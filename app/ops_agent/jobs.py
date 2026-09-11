@@ -13,6 +13,7 @@ from ops_agent.diagnosis import build_diagnosis_pipeline
 from ops_agent.prometheus_adapter import PrometheusAdapter
 from ops_agent.agent_core import (
     AgentOrchestrator,
+    AgentContextBuilder,
     FallbackReasoner,
     OpenAIDecisionReasoner,
     RuleReasoner,
@@ -44,13 +45,18 @@ def process_diagnosis_job(database_url: str, run_id: str) -> None:
         reasoner = FallbackReasoner(
             OpenAIDecisionReasoner(
                 OpenAI(
-                    api_key=os.environ["OPENAI_API_KEY"], timeout=15.0, max_retries=1
+                    api_key=os.environ["OPENAI_API_KEY"], timeout=15.0, max_retries=0
                 ),
                 os.environ.get("OPENAI_MODEL", "gpt-5.4-mini"),
+                context_window=os.environ.get("AGENT_MODEL_CONTEXT_WINDOW", "0"),
+                input_limit=os.environ.get("AGENT_MODEL_INPUT_LIMIT", "12000"),
+                output_tokens=os.environ.get("AGENT_MODEL_OUTPUT_TOKENS", "1000"),
+                safety_margin=os.environ.get("AGENT_MODEL_SAFETY_MARGIN", "512"),
             )
         )
     orchestrator = AgentOrchestrator(
-        database.session_factory, registry, reasoner=reasoner
+        database.session_factory, registry, reasoner=reasoner,
+        context_builder=AgentContextBuilder(evidence_ttls=os.environ.get("AGENT_EVIDENCE_TTLS", "{}"))
     )
     service = OpsService(
         database.session_factory,

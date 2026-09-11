@@ -122,3 +122,5 @@ python -m pytest examples/demo-app/tests -q
 
 领域与演进规范见 `docs/design/ops-agent-domain.md`，v0.3 运行、安全与回退见
 `docs/design/v0.3-agent-core.md`，监控说明见 `monitoring/README.md`。
+
+下一阶段的实施拆分见[上下文记忆窗口与 Agent / LLM 决策任务卡](docs/design/context-memory-task-cards.md)。

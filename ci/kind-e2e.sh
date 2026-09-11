@@ -197,6 +197,19 @@ STEPS_JSON="$(curl --fail --silent "http://127.0.0.1:${LOCAL_PORT}/api/agent-run
 printf '%s' "$STEPS_JSON" | python3 -c 'import json,sys; steps=json.load(sys.stdin); tools=[s["tool_invocation"]["tool_name"] for s in steps if s["tool_invocation"]]; assert len(set(tools)) >= 2; assert tools[:2] == ["get_pod_status", "get_previous_logs"]; assert steps[-1]["step_type"] == "COMPLETE"'
 AUDIT_JSON="$(curl --fail --silent "http://127.0.0.1:${LOCAL_PORT}/api/audit-events?entity_type=AgentRun&entity_id=${RUN_ID}")"
 printf '%s' "$AUDIT_JSON" | python3 -c 'import json,sys; events={x["event_type"] for x in json.load(sys.stdin)}; assert {"agent_step.started", "agent_tool.succeeded", "agent_run.completed"}.issubset(events)'
+printf '%s' "$AUDIT_JSON" | python3 -c 'import json,sys; steps=[x["payload"] for x in json.load(sys.stdin) if x["event_type"] == "agent_step.started"]; assert steps; assert all(x["context_version"] == "agent-context-v2" for x in steps); assert any(x["selection"]["retained"] > 1 for x in steps)'
+kubectl exec deployment/ops-agent -- python -c '
+import os, sys
+from sqlalchemy import select
+from ops_agent.database import Database
+from ops_agent.models import AgentStep
+with Database(os.environ["DATABASE_URL"]).session_factory() as session:
+    steps = list(session.scalars(select(AgentStep).where(AgentStep.agent_run_id == sys.argv[1])))
+    assert steps and all(s.context_version == "agent-context-v2" for s in steps)
+    assert any(s.context_snapshot["working_memory"]["confirmed"] for s in steps)
+    assert all(set(s.evidence_ids or []).issubset({e.id for e in s.agent_run.evidence}) for s in steps)
+print("context v2: persisted working memory and evidence references verified")
+' "$RUN_ID"
 test "$(kubectl auth can-i delete pods --as=system:serviceaccount:default:ops-agent-agent)" = "no"
 
 kubectl patch configmap demo-crashloop-mode --type merge \

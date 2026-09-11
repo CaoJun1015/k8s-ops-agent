@@ -28,6 +28,7 @@ from ops_agent.prometheus_adapter import PrometheusAdapter
 from ops_agent.verification import IncidentVerifier
 from ops_agent.agent_core import (
     AgentOrchestrator,
+    AgentContextBuilder,
     FallbackReasoner,
     OpenAIDecisionReasoner,
     RuleReasoner,
@@ -50,6 +51,11 @@ def create_app(overrides=None) -> Flask:
         DIAGNOSIS_PROVIDER=os.environ.get("DIAGNOSIS_PROVIDER", "rules"),
         AGENT_CORE_ENABLED=os.environ.get("AGENT_CORE_ENABLED", "true").lower()
         == "true",
+        AGENT_MODEL_CONTEXT_WINDOW=os.environ.get("AGENT_MODEL_CONTEXT_WINDOW", "0"),
+        AGENT_MODEL_INPUT_LIMIT=os.environ.get("AGENT_MODEL_INPUT_LIMIT", "12000"),
+        AGENT_MODEL_OUTPUT_TOKENS=os.environ.get("AGENT_MODEL_OUTPUT_TOKENS", "1000"),
+        AGENT_MODEL_SAFETY_MARGIN=os.environ.get("AGENT_MODEL_SAFETY_MARGIN", "512"),
+        AGENT_EVIDENCE_TTLS=os.environ.get("AGENT_EVIDENCE_TTLS", "{}"),
         AGENT_REASONER_PROVIDER=os.environ.get("AGENT_REASONER_PROVIDER", "rules"),
         OPENAI_API_KEY=os.environ.get("OPENAI_API_KEY", ""),
         OPENAI_MODEL=os.environ.get("OPENAI_MODEL", "gpt-5.4-mini"),
@@ -116,10 +122,14 @@ def create_app(overrides=None) -> Flask:
                 client = OpenAI(
                     api_key=application.config["OPENAI_API_KEY"],
                     timeout=15.0,
-                    max_retries=1,
+                    max_retries=0,
                 )
             reasoner = FallbackReasoner(
-                OpenAIDecisionReasoner(client, application.config["OPENAI_MODEL"])
+                OpenAIDecisionReasoner(client, application.config["OPENAI_MODEL"],
+                    context_window=application.config["AGENT_MODEL_CONTEXT_WINDOW"],
+                    input_limit=application.config["AGENT_MODEL_INPUT_LIMIT"],
+                    output_tokens=application.config["AGENT_MODEL_OUTPUT_TOKENS"],
+                    safety_margin=application.config["AGENT_MODEL_SAFETY_MARGIN"])
             )
         else:
             raise ValueError(f"unsupported Agent reasoner provider: {provider}")
@@ -127,6 +137,7 @@ def create_app(overrides=None) -> Flask:
         database.session_factory,
         registry,
         reasoner=reasoner,
+        context_builder=AgentContextBuilder(evidence_ttls=application.config["AGENT_EVIDENCE_TTLS"]),
     )
     application.extensions["agent_registry"] = registry
     application.extensions["agent_orchestrator"] = orchestrator

@@ -17,7 +17,7 @@ Action Task、Plan、Execution、AgentRun、AgentStep、ToolInvocation、Evidenc
 - Agent Worker 与 Execution Worker 使用不同队列和 ServiceAccount；只有后者具有受限写权限。
 - Kubernetes 日志、状态、事件和 Prometheus 指标先脱敏、限长并保存为 Evidence；
   规则或可选 LLM 的结论必须引用 Evidence ID。
-- LLM 默认关闭，启用后也只能返回严格 JSON Schema；任何错误都回退到规则结论。
+- LLM 默认关闭，启用后只返回结构化决策；模型响应错误经计费记录后回退规则，策略拒绝不能绕过。
 - Alertmanager `resolved` 通知必须经过资源/指标验证，不能直接关闭 Incident。
 - API 只写业务事实和 Outbox，不能在数据库提交后直接向队列发送易丢失消息。
 - 修复动作只能来自 Action Catalog，目前仅有控制器管理的异常 Pod 重建。
@@ -28,3 +28,13 @@ Action Task、Plan、Execution、AgentRun、AgentStep、ToolInvocation、Evidenc
 
 完整状态机、API 和交付顺序见 `design/ops-agent-domain.md`；v0.3 Agent Core 运行、
 安全与回退见 `design/v0.3-agent-core.md`。
+
+## 上下文与记忆
+
+Agent 在 RQ Worker 中调度完整调查循环，LLM 只位于 ContextBuilder 之后的决策环节。
+每轮从当前运行的证据和步骤重建工作记忆，保存到已有 AgentStep 快照，无新增数据库表。
+上下文按完整请求预算选择有效证据，保留时间、UID、证据引用及裁剪标记；模型调用前预留
+预算，返回后结算 usage，未知消耗保留预留占用。模型引用按本轮可见证据验证，规则降级
+按其实际读取的有效证据验证。计划、审批、修复执行继续在独立流程中完成。
+
+实现范围与验收记录见 `design/context-memory-task-cards.md`。
