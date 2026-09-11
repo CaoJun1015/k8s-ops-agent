@@ -78,37 +78,97 @@ class ExecutionStatus(StrEnum):
 
 class AgentRunStatus(StrEnum):
     QUEUED = "QUEUED"
+    RUNNING = "RUNNING"
     COLLECTING = "COLLECTING"
     DIAGNOSING = "DIAGNOSING"
     COMPLETED = "COMPLETED"
+    AWAITING_HUMAN = "AWAITING_HUMAN"
+    STOPPED = "STOPPED"
     FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
 
 
 class AgentRunMode(StrEnum):
     DIAGNOSE_ONLY = "DIAGNOSE_ONLY"
 
 
+class AgentStepType(StrEnum):
+    CALL_TOOL = "CALL_TOOL"
+    COMPLETE = "COMPLETE"
+    ASK_HUMAN = "ASK_HUMAN"
+    STOP = "STOP"
+
+
+class AgentStepStatus(StrEnum):
+    RUNNING = "RUNNING"
+    SUCCEEDED = "SUCCEEDED"
+    FAILED = "FAILED"
+    DENIED = "DENIED"
+
+
+class ToolInvocationStatus(StrEnum):
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    SUCCEEDED = "SUCCEEDED"
+    FAILED = "FAILED"
+    TIMED_OUT = "TIMED_OUT"
+    DENIED = "DENIED"
+
+
+class PolicyDecision(StrEnum):
+    ALLOW = "ALLOW"
+    DENY = "DENY"
+    ASK_HUMAN = "ASK_HUMAN"
+
+
+class EvidenceType(StrEnum):
+    ALERT_PAYLOAD = "ALERT_PAYLOAD"
+    POD_STATUS = "POD_STATUS"
+    CURRENT_LOGS = "CURRENT_LOGS"
+    PREVIOUS_LOGS = "PREVIOUS_LOGS"
+    K8S_EVENTS = "K8S_EVENTS"
+    WORKLOAD_STATUS = "WORKLOAD_STATUS"
+    RESOURCE_LIMITS = "RESOURCE_LIMITS"
+    PROMETHEUS_METRICS = "PROMETHEUS_METRICS"
+    REDIS_STATUS = "REDIS_STATUS"
+    COLLECTION_ERROR = "COLLECTION_ERROR"
+
+
+class OutboxStatus(StrEnum):
+    PENDING = "PENDING"
+    PUBLISHED = "PUBLISHED"
+    FAILED = "FAILED"
+
+
 TRANSITIONS = {
     IncidentStatus: {
-        IncidentStatus.OPEN: {IncidentStatus.DIAGNOSING, IncidentStatus.CLOSED},
+        IncidentStatus.OPEN: {
+            IncidentStatus.DIAGNOSING,
+            IncidentStatus.VERIFYING,
+            IncidentStatus.CLOSED,
+        },
         IncidentStatus.DIAGNOSING: {
             IncidentStatus.DIAGNOSED,
             IncidentStatus.FAILED,
+            IncidentStatus.VERIFYING,
             IncidentStatus.CLOSED,
         },
         IncidentStatus.DIAGNOSED: {
             IncidentStatus.PLAN_READY,
             IncidentStatus.DIAGNOSING,
+            IncidentStatus.VERIFYING,
             IncidentStatus.CLOSED,
         },
         IncidentStatus.PLAN_READY: {
             IncidentStatus.AWAITING_APPROVAL,
             IncidentStatus.DIAGNOSED,
+            IncidentStatus.VERIFYING,
             IncidentStatus.CLOSED,
         },
         IncidentStatus.AWAITING_APPROVAL: {
             IncidentStatus.REMEDIATING,
             IncidentStatus.DIAGNOSED,
+            IncidentStatus.VERIFYING,
             IncidentStatus.CLOSED,
         },
         IncidentStatus.REMEDIATING: {
@@ -122,6 +182,7 @@ TRANSITIONS = {
         IncidentStatus.RESOLVED: {IncidentStatus.CLOSED},
         IncidentStatus.FAILED: {
             IncidentStatus.DIAGNOSING,
+            IncidentStatus.VERIFYING,
             IncidentStatus.CLOSED,
         },
         IncidentStatus.CLOSED: set(),
@@ -162,7 +223,10 @@ TRANSITIONS = {
         PlanStatus.CANCELLED: set(),
     },
     ExecutionStatus: {
-        ExecutionStatus.PREPARED: {ExecutionStatus.RUNNING},
+        ExecutionStatus.PREPARED: {
+            ExecutionStatus.RUNNING,
+            ExecutionStatus.FAILED,
+        },
         ExecutionStatus.RUNNING: {
             ExecutionStatus.SUCCEEDED,
             ExecutionStatus.FAILED,
@@ -174,8 +238,17 @@ TRANSITIONS = {
     },
     AgentRunStatus: {
         AgentRunStatus.QUEUED: {
+            AgentRunStatus.RUNNING,
             AgentRunStatus.COLLECTING,
             AgentRunStatus.FAILED,
+            AgentRunStatus.CANCELLED,
+        },
+        AgentRunStatus.RUNNING: {
+            AgentRunStatus.COMPLETED,
+            AgentRunStatus.AWAITING_HUMAN,
+            AgentRunStatus.STOPPED,
+            AgentRunStatus.FAILED,
+            AgentRunStatus.CANCELLED,
         },
         AgentRunStatus.COLLECTING: {
             AgentRunStatus.DIAGNOSING,
@@ -186,7 +259,10 @@ TRANSITIONS = {
             AgentRunStatus.FAILED,
         },
         AgentRunStatus.COMPLETED: set(),
+        AgentRunStatus.AWAITING_HUMAN: {AgentRunStatus.CANCELLED},
+        AgentRunStatus.STOPPED: set(),
         AgentRunStatus.FAILED: set(),
+        AgentRunStatus.CANCELLED: set(),
     },
 }
 

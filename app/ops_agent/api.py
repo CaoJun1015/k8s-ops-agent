@@ -6,7 +6,6 @@ from functools import wraps
 from flask import Blueprint, current_app, jsonify, request
 
 from ops_agent.domain import InvalidStateTransition
-from ops_agent.queueing import enqueue_diagnosis, enqueue_execution
 from ops_agent.metrics import INCIDENTS_CREATED
 from ops_agent.auto_remediation import attempt_auto_remediation
 from ops_agent.services import (
@@ -15,9 +14,11 @@ from ops_agent.services import (
     PolicyDeniedError,
     ValidationError,
     serialize_agent_run,
+    serialize_agent_step,
     serialize_audit,
     serialize_incident,
     serialize_execution,
+    serialize_evidence,
     serialize_plan,
     serialize_task,
 )
@@ -122,15 +123,17 @@ def create_agent_run(incident_id):
         incident_id,
         mode,
         request.headers.get("Idempotency-Key"),
+        enqueue=current_app.config["QUEUE_MODE"] != "inline",
+        goal=body.get("goal"),
+        budget=body.get("budget"),
+        model_name=(
+            current_app.config["OPENAI_MODEL"]
+            if current_app.config.get("AGENT_REASONER_PROVIDER") == "rules+openai"
+            else None
+        ),
     )
     if created and current_app.config["QUEUE_MODE"] == "inline":
         run = service().process_diagnosis(run.id)
-    elif created:
-        enqueue_diagnosis(
-            current_app.extensions["redis"],
-            current_app.config["DATABASE_URL"],
-            run.id,
-        )
     location = f"/api/agent-runs/{run.id}"
     return jsonify({"id": run.id, "location": location}), 202
 
@@ -138,6 +141,35 @@ def create_agent_run(incident_id):
 @api.get("/agent-runs/<run_id>")
 def get_agent_run(run_id):
     return jsonify(serialize_agent_run(service().get_agent_run(run_id)))
+
+
+@api.get("/agent-runs")
+def list_agent_runs():
+    return jsonify(
+        [
+            serialize_agent_run(item)
+            for item in service().list_agent_runs(request.args.get("incident_id"))
+        ]
+    )
+
+
+@api.get("/agent-runs/<run_id>/evidence")
+def list_agent_run_evidence(run_id):
+    return jsonify(
+        [serialize_evidence(item) for item in service().list_evidence(run_id)]
+    )
+
+
+@api.get("/agent-runs/<run_id>/steps")
+def list_agent_run_steps(run_id):
+    return jsonify(
+        [serialize_agent_step(item) for item in service().list_agent_steps(run_id)]
+    )
+
+
+@api.post("/agent-runs/<run_id>/cancel")
+def cancel_agent_run(run_id):
+    return jsonify(serialize_agent_run(service().cancel_agent_run(run_id))), 202
 
 
 @api.get("/audit-events")
@@ -179,9 +211,10 @@ def receive_prometheus_alerts():
         raise ValidationError("alerts must be a list")
 
     accepted = 0
+    resolved = 0
+    verification_failed = 0
+    ignored = 0
     for alert in alerts:
-        if alert.get("status") != "firing":
-            continue
         labels = alert.get("labels") or {}
         annotations = alert.get("annotations") or {}
         alert_name = labels.get("alertname", "PrometheusAlert")
@@ -205,6 +238,22 @@ def receive_prometheus_alerts():
             f"{labels.get('cluster', 'default')}:{namespace}:"
             f"{resource_kind}:{resource_name}:{alert_name}"
         )
+        alert_status = alert.get("status") or body.get("status")
+        if alert_status == "resolved":
+            _, outcome = service().resolve_incident_from_alert(
+                fingerprint,
+                current_app.extensions["incident_verifier"],
+            )
+            if outcome == "resolved":
+                resolved += 1
+            elif outcome == "verification_failed":
+                verification_failed += 1
+            else:
+                ignored += 1
+            continue
+        if alert_status != "firing":
+            ignored += 1
+            continue
         incident, created = service().create_incident(
             {
                 "title": annotations.get("summary") or alert_name,
@@ -217,6 +266,11 @@ def receive_prometheus_alerts():
                 "source": "prometheus",
                 "summary": annotations.get("description")
                 or annotations.get("summary"),
+                "source_context": {
+                    "status": alert_status,
+                    "labels": labels,
+                    "annotations": annotations,
+                },
             }
         )
         accepted += 1
@@ -225,11 +279,15 @@ def receive_prometheus_alerts():
             run, _ = service().create_agent_run(
                 incident.id,
                 "DIAGNOSE_ONLY",
-                f"alert:{fingerprint}:diagnosis",
+                f"alert:{incident.id}:diagnosis",
+                enqueue=current_app.config["QUEUE_MODE"] != "inline",
             )
             if current_app.config["QUEUE_MODE"] == "inline":
                 service().process_diagnosis(run.id)
-                if current_app.config["AUTO_REMEDIATE_ENABLED"]:
+                if (
+                    current_app.config["AUTO_REMEDIATE_ENABLED"]
+                    and not current_app.config["AGENT_CORE_ENABLED"]
+                ):
                     attempt_auto_remediation(
                         service=service(),
                         incident_id=incident.id,
@@ -245,14 +303,15 @@ def receive_prometheus_alerts():
                         redis_connection=current_app.extensions["redis"],
                         database_url=current_app.config["DATABASE_URL"],
                     )
-            else:
-                enqueue_diagnosis(
-                    current_app.extensions["redis"],
-                    current_app.config["DATABASE_URL"],
-                    run.id,
-                )
 
-    return jsonify({"accepted": accepted}), 202
+    return jsonify(
+        {
+            "accepted": accepted,
+            "resolved": resolved,
+            "verification_failed": verification_failed,
+            "ignored": ignored,
+        }
+    ), 202
 
 
 @api.post("/incidents/<incident_id>/plans")
@@ -342,17 +401,12 @@ def execute_plan(plan_id):
         plan_id,
         request.headers.get("Idempotency-Key", ""),
         request.headers.get("X-Actor-ID", "anonymous"),
+        enqueue=current_app.config["EXECUTION_MODE"] != "inline",
     )
     if created and current_app.config["EXECUTION_MODE"] == "inline":
         execution = service().process_execution(
             execution.id,
             current_app.extensions["kubernetes_adapter"],
-        )
-    elif created:
-        enqueue_execution(
-            current_app.extensions["redis"],
-            current_app.config["DATABASE_URL"],
-            execution.id,
         )
     location = f"/api/executions/{execution.id}"
     return jsonify({"id": execution.id, "location": location}), 202

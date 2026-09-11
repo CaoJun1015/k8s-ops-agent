@@ -27,12 +27,8 @@ spec:
           image: ops-agent:v1
           imagePullPolicy: IfNotPresent
           command:
-            - gunicorn
-            - --bind
-            - 0.0.0.0:5000
-            - --workers
-            - "2"
-            - app:app
+            - python
+            - run_gunicorn.py
           ports:
             - name: http
               containerPort: 5000
@@ -46,6 +42,8 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
+            - name: PROMETHEUS_MULTIPROC_DIR
+              value: /tmp/prometheus
           resources:
             requests:
               cpu: 100m

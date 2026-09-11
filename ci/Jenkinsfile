@@ -73,9 +73,13 @@ pipeline {
                     kubectl set image deployment/ops-agent-worker \
                         worker=${params.DOCKER_REGISTRY}/${params.DOCKER_IMAGE}:${DOCKER_TAG} \
                         -n ${K8S_NAMESPACE}
+                    kubectl set image deployment/ops-agent-dispatcher \
+                        dispatcher=${params.DOCKER_REGISTRY}/${params.DOCKER_IMAGE}:${DOCKER_TAG} \
+                        -n ${K8S_NAMESPACE}
                 """
                 sh "kubectl rollout status deployment/ops-agent -n ${K8S_NAMESPACE} --timeout=120s"
                 sh "kubectl rollout status deployment/ops-agent-worker -n ${K8S_NAMESPACE} --timeout=120s"
+                sh "kubectl rollout status deployment/ops-agent-dispatcher -n ${K8S_NAMESPACE} --timeout=120s"
             }
         }
     }

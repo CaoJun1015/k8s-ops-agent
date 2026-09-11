@@ -14,7 +14,7 @@ spec:
       labels:
         app: ops-agent-worker
     spec:
-      serviceAccountName: ops-agent-worker
+      serviceAccountName: ops-agent-agent
       securityContext:
         runAsNonRoot: true
       containers:
@@ -27,7 +27,6 @@ spec:
             - --url
             - redis://redis-svc:6379/0
             - agent-runs
-            - executions
           envFrom:
             - configMapRef:
                 name: ops-agent-config

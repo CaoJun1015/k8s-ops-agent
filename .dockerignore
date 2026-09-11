@@ -1,0 +1,8 @@
+# The ops-agent image only copies application sources. Keeping the build context
+# narrow avoids sending local virtualenvs, test caches, reports, and secrets to
+# the Docker daemon (and avoids DrvFs extended-attribute errors under WSL).
+*
+!app/
+!app/**
+!docker/
+!docker/Dockerfile

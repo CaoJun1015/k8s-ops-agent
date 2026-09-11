@@ -14,6 +14,7 @@ venv/
 
 # Trae internal
 .trae/
+.trae-html-share-packages/
 
 # OS
 .DS_Store
@@ -25,7 +26,17 @@ reports/*.log
 
 # Environment
 .env
+k8s/secret.yaml
+monitoring/alertmanager-secret.yaml
 
 # Personal documents (not for repository)
 项目介绍与优化建议.md
 PRD-enhancement.md
+docs/电脑开发环境盘点与整理方案.md
+docs/resume-packaging-guide/
+docs/zero-to-one-guide/
+db-comparison-report/
+
+# Local inspection/build artifacts
+kind-linux-amd64
+reports/inspection-*.txt

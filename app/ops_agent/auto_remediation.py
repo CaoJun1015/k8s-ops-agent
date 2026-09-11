@@ -1,7 +1,6 @@
 """Policy-gated automatic remediation orchestration."""
 
 from ops_agent.domain import IncidentStatus
-from ops_agent.queueing import enqueue_execution
 
 
 def attempt_auto_remediation(
@@ -57,14 +56,10 @@ def attempt_auto_remediation(
         plan.id,
         idempotency_key=f"auto:{incident.id}:{inspection['uid']}",
         requested_by="policy-engine",
+        enqueue=execution_mode != "inline",
     )
     if not created:
         return execution
     if execution_mode == "inline":
         return service.process_execution(execution.id, kubernetes_adapter)
-    enqueue_execution(
-        redis_connection,
-        database_url,
-        execution.id,
-    )
     return execution

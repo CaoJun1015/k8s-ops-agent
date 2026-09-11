@@ -30,6 +30,6 @@ def test_enqueue_diagnosis_uses_stable_job_contract(queue_class):
         "postgresql+psycopg://user:secret@postgres/ops_agent",
         "run-123",
         job_id="agent-run:run-123",
-        job_timeout=120,
+        job_timeout=330,
         result_ttl=86400,
     )

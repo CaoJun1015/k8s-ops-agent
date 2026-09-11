@@ -261,6 +261,38 @@ def test_execution_error_is_persisted_and_creates_manual_task(
     assert any(task["task_type"] == "FOLLOW_UP" for task in tasks)
 
 
+def test_verification_exception_preserves_execution_fact_and_escalates(
+    client, kubernetes_adapter
+):
+    """删除成功后验证器异常时，执行事实不能回滚为未开始。"""
+    kubernetes_adapter.verify_recovery.side_effect = RuntimeError(
+        "password=verification-secret timeout"
+    )
+    incident = diagnosed_incident(client)
+    plan = create_plan(client, incident["id"])
+    client.post(f"/api/plans/{plan['id']}/dry-run")
+    client.post(
+        f"/api/plans/{plan['id']}/approve",
+        headers={"X-Actor-ID": "oncall-user"},
+    )
+
+    response = client.post(
+        f"/api/plans/{plan['id']}/execute",
+        headers={
+            "Idempotency-Key": "verification-exception-once",
+            "X-Actor-ID": "oncall-user",
+        },
+    )
+    execution = client.get(response.get_json()["location"]).get_json()
+
+    assert response.status_code == 202
+    assert execution["status"] == "VERIFICATION_FAILED"
+    assert execution["result"]["deleted"] is True
+    assert "verification-secret" not in str(execution)
+    updated = client.get(f"/api/incidents/{incident['id']}").get_json()
+    assert updated["status"] == "FAILED"
+
+
 def test_operator_token_is_required_when_auth_is_enabled(kubernetes_adapter):
     """生产审批接口不能只信任可伪造的操作者请求头。"""
     application = create_app(

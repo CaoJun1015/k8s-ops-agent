@@ -8,19 +8,80 @@ from ops_agent.auto_remediation import attempt_auto_remediation
 from ops_agent.database import Database
 from ops_agent.services import OpsService
 from ops_agent.kubernetes_adapter import KubernetesAdapter
+from ops_agent.evidence import EvidenceCollector
+from ops_agent.diagnosis import build_diagnosis_pipeline
+from ops_agent.prometheus_adapter import PrometheusAdapter
+from ops_agent.agent_core import (
+    AgentOrchestrator,
+    AgentContextBuilder,
+    FallbackReasoner,
+    OpenAIDecisionReasoner,
+    RuleReasoner,
+)
+from ops_agent.tooling import build_read_only_registry
 
 
 def process_diagnosis_job(database_url: str, run_id: str) -> None:
     database = Database(database_url)
-    service = OpsService(database.session_factory)
+    kubernetes_adapter = KubernetesAdapter()
+    prometheus_url = os.environ.get("PROMETHEUS_URL", "")
+    prometheus_adapter = (
+        PrometheusAdapter(prometheus_url) if prometheus_url else None
+    )
+    agent_core_enabled = os.environ.get("AGENT_CORE_ENABLED", "true").lower() == "true"
+    registry = build_read_only_registry(
+        kubernetes_adapter,
+        prometheus_adapter,
+        allowed_namespaces={
+            item.strip()
+            for item in os.environ.get("ALLOWED_NAMESPACES", "default").split(",")
+            if item.strip()
+        },
+    )
+    reasoner = RuleReasoner()
+    if os.environ.get("AGENT_REASONER_PROVIDER", "rules") == "rules+openai":
+        from openai import OpenAI
+
+        reasoner = FallbackReasoner(
+            OpenAIDecisionReasoner(
+                OpenAI(
+                    api_key=os.environ["OPENAI_API_KEY"], timeout=15.0, max_retries=0
+                ),
+                os.environ.get("OPENAI_MODEL", "gpt-5.4-mini"),
+                context_window=os.environ.get("AGENT_MODEL_CONTEXT_WINDOW", "0"),
+                input_limit=os.environ.get("AGENT_MODEL_INPUT_LIMIT", "12000"),
+                output_tokens=os.environ.get("AGENT_MODEL_OUTPUT_TOKENS", "1000"),
+                safety_margin=os.environ.get("AGENT_MODEL_SAFETY_MARGIN", "512"),
+            )
+        )
+    orchestrator = AgentOrchestrator(
+        database.session_factory, registry, reasoner=reasoner,
+        context_builder=AgentContextBuilder(evidence_ttls=os.environ.get("AGENT_EVIDENCE_TTLS", "{}"))
+    )
+    service = OpsService(
+        database.session_factory,
+        evidence_collector=EvidenceCollector(
+            kubernetes_adapter, prometheus_adapter
+        ),
+        diagnosis_engine=build_diagnosis_pipeline(
+            os.environ.get("DIAGNOSIS_PROVIDER", "rules"),
+            api_key=os.environ.get("OPENAI_API_KEY"),
+            model=os.environ.get("OPENAI_MODEL", "gpt-5.4-mini"),
+        ),
+        agent_orchestrator=orchestrator,
+        agent_core_enabled=agent_core_enabled,
+    )
     try:
         run = service.process_diagnosis(run_id)
-        if os.environ.get("AUTO_REMEDIATE_ENABLED", "false").lower() == "true":
+        if (
+            not agent_core_enabled
+            and os.environ.get("AUTO_REMEDIATE_ENABLED", "false").lower() == "true"
+        ):
             redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
             attempt_auto_remediation(
                 service=service,
                 incident_id=run.incident_id,
-                kubernetes_adapter=KubernetesAdapter(),
+                kubernetes_adapter=kubernetes_adapter,
                 allowed_namespaces={
                     item.strip()
                     for item in os.environ.get(
@@ -40,4 +101,8 @@ def process_diagnosis_job(database_url: str, run_id: str) -> None:
 def process_execution_job(database_url: str, execution_id: str) -> None:
     database = Database(database_url)
     service = OpsService(database.session_factory)
-    service.process_execution(execution_id, KubernetesAdapter())
+    try:
+        service.process_execution(execution_id, KubernetesAdapter())
+    except Exception as error:
+        service.fail_execution(execution_id, str(error))
+        raise
